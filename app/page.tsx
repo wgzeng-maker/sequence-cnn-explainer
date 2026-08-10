@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import k562Peak from "./data/k562-peak-activations.json";
 import synthetic from "./data/synthetic-activations.json";
+import { loadFloat32Tensor } from "./tensor-loader";
 
 type Demo = typeof k562Peak;
 type Tensor = Demo["tensors"]["stem"];
@@ -57,18 +58,20 @@ function signedColor(value: number, maximum: number) {
 
 function useTensorData(tensor: Tensor | null) {
   const [loaded, setLoaded] = useState<{ url: string; values: Float32Array } | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!tensor) return;
-    let cancelled = false;
-    fetch(tensor.full_heatmap.url)
-      .then(response => {
-        if (!response.body) throw new Error("Tensor response had no readable body");
-        return new Response(response.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
-      })
-      .then(buffer => { if (!cancelled) setLoaded({ url: tensor.full_heatmap.url, values: new Float32Array(buffer) }); });
-    return () => { cancelled = true; };
+    const controller = new AbortController();
+    setError(null);
+    loadFloat32Tensor(tensor.full_heatmap.url, tensor.full_heatmap.height_channels * tensor.full_heatmap.width_positions, controller.signal)
+      .then(values => setLoaded({ url: tensor.full_heatmap.url, values }))
+      .catch(reason => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setError(reason instanceof Error ? reason.message : "The tensor data could not be loaded.");
+      });
+    return () => controller.abort();
   }, [tensor]);
-  return loaded?.url === tensor?.full_heatmap.url ? loaded.values : null;
+  return { values: loaded?.url === tensor?.full_heatmap.url ? loaded.values : null, error };
 }
 
 function SectionHeading({ step, eyebrow, title, children }: { step: string; eyebrow: string; title: string; children: React.ReactNode }) {
@@ -289,7 +292,7 @@ function ResidualStory({ demo, block, setBlock }: { demo: Demo; block: number; s
   const dilation = DILATIONS[block - 1];
   const inputKey = (block === 1 ? "stem" : `res${block - 1}`) as TensorKey;
   const inputTensor = tensorFor(demo, inputKey);
-  const inputValues = useTensorData(inputTensor);
+  const { values: inputValues } = useTensorData(inputTensor);
   const inputLength = LENGTHS[block];
   const outputLength = LENGTHS[block + 1];
   const [position, setPosition] = useState(kernel.trace.output_position_zero_based);
@@ -411,7 +414,7 @@ function TensorInspector({ demo }: { demo: Demo }) {
   const [transfer, setTransfer] = useState<Transfer>("sqrt");
   const [gain, setGain] = useState(1.8);
   const tensor = tensorFor(demo, stage);
-  const values = useTensorData(tensor);
+  const { values, error } = useTensorData(tensor);
   const length = tensor.full_heatmap.width_positions;
   const [center, setCenter] = useState(Math.floor(length / 2));
   const [channel, setChannel] = useState(tensor.selected_channels_zero_based[0]);
@@ -444,6 +447,7 @@ function TensorInspector({ demo }: { demo: Demo }) {
       {view === "channel" && <label><span>Channel · {channel + 1}</span><input type="range" min="0" max="511" value={channel} onChange={event => setChannel(Number(event.target.value))} /></label>}
     </div>
     <div className="truth-note"><b>{(tensor.zero_fraction * 100).toFixed(1)}% exact zeros</b><span>Blank-looking areas are part of the real sparse tensor, not missing data.</span><em>File: raw float32 · no 8-bit rounding</em></div>
+    {error && <div className="tensor-error" role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
     {view === "tensor" ? <>
       <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE TENSOR</small><h3>All 512 channels × {length.toLocaleString()} positions</h3></div><span>click to move the zoom below</span></div><TensorCanvas tensor={tensor} values={values} mode="full" start={0} width={length} transfer={transfer} gain={gain} marker={center} onMarker={setCenter} /></div>
       <FlowArrow label="the outlined position opens here" />

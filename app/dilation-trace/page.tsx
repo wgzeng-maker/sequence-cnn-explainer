@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import demo from "../data/k562-peak-activations.json";
+import { loadFloat32Tensor } from "../tensor-loader";
 import styles from "./page.module.css";
 
 type TensorKey = "stem" | "res1" | "res2" | "res3" | "res4" | "res5" | "res6" | "res7" | "res8";
@@ -27,17 +28,23 @@ function tensorFor(key: TensorKey) {
 
 function useRawTensors() {
   const [loaded, setLoaded] = useState<RawTensors>({});
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    setError(null);
     Promise.all(KEYS.map(async key => {
-      const response = await fetch(tensorFor(key).full_heatmap.url);
-      if (!response.body) throw new Error(`No body for ${key}`);
-      const buffer = await new Response(response.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
-      return [key, new Float32Array(buffer)] as const;
-    })).then(entries => { if (!cancelled) setLoaded(Object.fromEntries(entries) as RawTensors); });
-    return () => { cancelled = true; };
+      const tensor = tensorFor(key);
+      const values = await loadFloat32Tensor(tensor.full_heatmap.url, tensor.full_heatmap.height_channels * tensor.full_heatmap.width_positions, controller.signal);
+      return [key, values] as const;
+    }))
+      .then(entries => setLoaded(Object.fromEntries(entries) as RawTensors))
+      .catch(reason => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setError(reason instanceof Error ? reason.message : "The tensor data could not be loaded.");
+      });
+    return () => controller.abort();
   }, []);
-  return loaded;
+  return { raw: loaded, error };
 }
 
 function color(value: number, maximum: number, signed = false) {
@@ -240,7 +247,7 @@ function ProfileReader({ raw, globalCenter }: { raw: RawTensors; globalCenter: n
 }
 
 export default function DilationTracePage() {
-  const raw = useRawTensors();
+  const { raw, error } = useRawTensors();
   const channels = demo.tensors.stem.selected_channels_zero_based;
   const [stage, setStage] = useState(1);
   const [globalCenter, setGlobalCenter] = useState(1058);
@@ -274,6 +281,7 @@ export default function DilationTracePage() {
       <label><b>Tracked input coordinate</b><input type="range" min="558" max="1557" value={globalCenter} onChange={event => setGlobalCenter(Number(event.target.value))} /><span>{globalCenter}</span></label>
       <div className={styles.stageButtons}>{LABELS.map((label, index) => <button key={label} aria-pressed={stage === index} className={stage === index ? styles.active : ""} onClick={() => { setPlaying(false); setStage(index); }}><b>{label}</b><span>RF {RECEPTIVE_FIELDS[index]} bp</span></button>)}</div>
     </section>
+    {error && <div className={styles.tensorError} role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
 
     <section className={styles.section}>
       <div className={styles.sectionHeading}><span>1</span><div><small>TENSOR FILMSTRIP</small><h2>The same 12 channels and 61 input-aligned positions through every stage</h2><p>Rows retain the same channel numbers across panels. This makes changes comparable; these channels were chosen by high stem activation, not known biological importance.</p></div></div>
