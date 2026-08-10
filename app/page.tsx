@@ -1,0 +1,548 @@
+"use client";
+
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import k562Peak from "./data/k562-peak-activations.json";
+import synthetic from "./data/synthetic-activations.json";
+
+type Demo = typeof k562Peak;
+type Tensor = Demo["tensors"]["stem"];
+type TensorKey = "stem" | "res1" | "res2" | "res3" | "res4" | "res5" | "res6" | "res7" | "res8";
+type Transfer = "linear" | "sqrt" | "log";
+type InspectorView = "tensor" | "channel" | "max" | "mean";
+
+const BASES = ["A", "C", "G", "T"] as const;
+const BASE_COLORS = ["#e96b54", "#4f97b2", "#e5b33f", "#72a17e"];
+const PRESETS: Record<string, Demo> = { k562: k562Peak, synthetic };
+const DILATIONS = [2, 4, 8, 16, 32, 64, 128, 256];
+const LENGTHS = [2114, 2094, 2090, 2082, 2066, 2034, 1970, 1842, 1586, 1074];
+const RECEPTIVE_FIELDS = [21, 25, 33, 49, 81, 145, 273, 529, 1041];
+
+const css = (values: Record<string, string | number>) => values as CSSProperties;
+const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+const offsetForLength = (length: number) => (2114 - length) / 2;
+const inputCoordinate = (local: number, length: number) => Math.round(offsetForLength(length) + local + 1);
+
+function tensorFor(demo: Demo, key: TensorKey): Tensor {
+  return demo.tensors[key] as Tensor;
+}
+
+function transformValue(value: number, maximum: number, transfer: Transfer, gain: number) {
+  const ratio = clamp(value / Math.max(maximum, 1e-12), 0, 1);
+  const mapped = transfer === "linear" ? ratio : transfer === "sqrt" ? Math.sqrt(ratio) : Math.log1p(ratio * 100) / Math.log(101);
+  return clamp(mapped * gain, 0, 1);
+}
+
+function heatColor(level: number) {
+  if (level <= 0) return "rgb(247 244 236)";
+  const stops = [
+    [247, 244, 236],
+    [244, 209, 94],
+    [235, 105, 73],
+    [109, 38, 67],
+  ];
+  const position = clamp(level, 0, 1) * (stops.length - 1);
+  const start = Math.min(stops.length - 2, Math.floor(position));
+  const t = position - start;
+  const color = stops[start].map((value, index) => Math.round(value + (stops[start + 1][index] - value) * t));
+  return `rgb(${color.join(" ")})`;
+}
+
+function signedColor(value: number, maximum: number) {
+  const strength = Math.sqrt(clamp(Math.abs(value) / Math.max(maximum, 1e-12), 0, 1));
+  const target = value >= 0 ? [44, 129, 158] : [225, 91, 69];
+  const background = [247, 244, 236];
+  const color = background.map((base, index) => Math.round(base + (target[index] - base) * strength));
+  return `rgb(${color.join(" ")})`;
+}
+
+function useTensorData(tensor: Tensor | null) {
+  const [loaded, setLoaded] = useState<{ url: string; values: Float32Array } | null>(null);
+  useEffect(() => {
+    if (!tensor) return;
+    let cancelled = false;
+    fetch(tensor.full_heatmap.url)
+      .then(response => {
+        if (!response.body) throw new Error("Tensor response had no readable body");
+        return new Response(response.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+      })
+      .then(buffer => { if (!cancelled) setLoaded({ url: tensor.full_heatmap.url, values: new Float32Array(buffer) }); });
+    return () => { cancelled = true; };
+  }, [tensor]);
+  return loaded?.url === tensor?.full_heatmap.url ? loaded.values : null;
+}
+
+function SectionHeading({ step, eyebrow, title, children }: { step: string; eyebrow: string; title: string; children: React.ReactNode }) {
+  return <div className="section-heading" data-feedback-id={`${step} · ${title}`}>
+    <span className="step-number">{step}</span>
+    <div><small>{eyebrow}</small><h2>{title}</h2><p>{children}</p></div>
+  </div>;
+}
+
+function FlowArrow({ label }: { label?: string }) {
+  return <div className="flow-arrow" aria-hidden="true"><i /><span>{label ?? "next"}</span></div>;
+}
+
+function BaseLetters({ sequence, positions }: { sequence: string; positions: number[] }) {
+  return <div className="base-letters" style={css({ "--columns": positions.length })}>
+    {positions.map(position => {
+      const base = sequence[position] ?? "N";
+      return <i key={position} style={{ background: BASE_COLORS[BASES.indexOf(base as typeof BASES[number])] ?? "#ddd" }}>{base}</i>;
+    })}
+  </div>;
+}
+
+function SequenceOverview({ sequence, start, onStart }: { sequence: string; start: number; onStart: (value: number) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const markerLeft = start / (sequence.length - 21) * 100;
+  const select = (clientX: number) => {
+    const rect = ref.current?.getBoundingClientRect();
+    if (!rect) return;
+    onStart(Math.round(clamp((clientX - rect.left) / rect.width, 0, 1) * (sequence.length - 21)));
+  };
+  return <div className="sequence-overview">
+    <div className="overview-label"><b>All 2,114 input bases</b><span>one thin column per base · no quiet-region compression</span></div>
+    <div ref={ref} className="sequence-ribbon" role="button" tabIndex={0} aria-label="Move the selected 21-base input window" onClick={event => select(event.clientX)} onKeyDown={event => {
+      if (event.key === "ArrowLeft") onStart(clamp(start - 21, 0, sequence.length - 21));
+      if (event.key === "ArrowRight") onStart(clamp(start + 21, 0, sequence.length - 21));
+    }}>
+      {Array.from(sequence).map((base, index) => <i key={index} style={{ background: BASE_COLORS[BASES.indexOf(base as typeof BASES[number])] }} />)}
+      <b style={{ left: `${markerLeft}%` }}><span>selected 21 bases</span></b>
+    </div>
+    <div className="axis"><span>input 1</span><span>click to move the 21-base window</span><span>input 2,114</span></div>
+  </div>;
+}
+
+function OneHotZoom({ sequence, start }: { sequence: string; start: number }) {
+  const positions = Array.from({ length: 21 }, (_, index) => start + index);
+  return <div className="onehot-card" data-feedback-id="One-hot matrix zoom">
+    <div className="mini-heading"><div><small>EXACT INPUT WINDOW</small><h3>4 rows × 21 base positions</h3></div><span>one colored 1 in every column</span></div>
+    <div className="onehot-grid">
+      {BASES.map((base, row) => <div className="onehot-row" key={base}>
+        <b>{base}</b><div style={css({ "--columns": 21 })}>{positions.map(position => <i key={position} className={sequence[position] === base ? "on" : ""} style={sequence[position] === base ? { background: BASE_COLORS[row] } : undefined}>{sequence[position] === base ? "1" : "0"}</i>)}</div>
+      </div>)}
+    </div>
+    <BaseLetters sequence={sequence} positions={positions} />
+    <div className="axis"><span>{start + 1}</span><span>input-relative coordinates</span><span>{start + 21}</span></div>
+  </div>;
+}
+
+function WeightMatrix({ weights, gain }: { weights: number[][]; gain: number }) {
+  const maximum = Math.max(...weights.flat().map(Math.abs), 1e-12);
+  return <div className="weight-matrix">
+    {BASES.map((base, row) => <div key={base}><b>{base}</b><span style={css({ "--columns": 21 })}>{weights[row].map((value, index) => <i key={index} style={{ background: signedColor(value, maximum), filter: `saturate(${gain})` }} title={`${base}, kernel position ${index + 1}: ${value.toFixed(4)}`} />)}</span></div>)}
+  </div>;
+}
+
+function StemStory({ demo, start, setStart, gain }: { demo: Demo; start: number; setStart: (value: number) => void; gain: number }) {
+  const [filterIndex, setFilterIndex] = useState(0);
+  const filter = demo.filter_demos[filterIndex];
+  const sequence = demo.input.sequence;
+  const window = sequence.slice(start, start + 21).split("");
+  const weighted = window.map((base, index) => filter.weights_base_rows_by_positions[BASES.indexOf(base as typeof BASES[number])][index]);
+  const dotProduct = weighted.reduce((sum, value) => sum + value, 0);
+  const beforeRelu = dotProduct + filter.bias;
+  const output = Math.max(0, beforeRelu);
+  const maximum = Math.max(...filter.weights_base_rows_by_positions.flat().map(Math.abs), 1e-12);
+  const tensor = demo.tensors.stem;
+  const rowIndex = tensor.selected_channels_zero_based.indexOf(filter.filter_zero_based);
+  const track = rowIndex >= 0 ? tensor.selected_channel_values[rowIndex] : [];
+  const zoomStart = clamp(start - 20, 0, 2094 - 61);
+  const zoomPositions = Array.from({ length: 61 }, (_, index) => zoomStart + index);
+  const trackMax = Math.max(...track, 1e-12);
+
+  return <section className="story-section" id="stem">
+    <SectionHeading step="2" eyebrow="LOCAL FEATURE DETECTION" title="A stem filter asks the same 21-base question everywhere">
+      One learned kernel slides one base at a time. The calculation below produces exactly one cell in the <b>512 × 2,094</b> stem tensor.
+    </SectionHeading>
+    <div className="choice-row" aria-label="Choose a real stem filter">{demo.filter_demos.map((item, index) => <button key={item.filter_zero_based} className={filterIndex === index ? "active" : ""} onClick={() => { setFilterIndex(index); setStart(item.peak_position_zero_based); }}><b>{item.filter_human_label}</b><small>peak {item.maximum_activation.toFixed(2)}</small></button>)}</div>
+    <div className="stem-stage">
+      <div className="kernel-card" data-feedback-id="Actual 21 by 4 stem kernel">
+        <div className="mini-heading"><div><small>THE LEARNED QUESTION</small><h3>{filter.filter_human_label} kernel · 4 × 21</h3></div><span>blue positive · coral negative</span></div>
+        <WeightMatrix weights={filter.weights_base_rows_by_positions} gain={gain} />
+      </div>
+      <div className="slide-symbol"><b>slides</b><span>↓</span></div>
+      <div className="kernel-card selected-window">
+        <div className="mini-heading"><div><small>THE 21 BASES UNDER IT</small><h3>Input {start + 1}–{start + 21}</h3></div><span>move the slider</span></div>
+        <div className="sequence-cells" style={css({ "--columns": 21 })}>{window.map((base, index) => <i key={index} style={{ background: BASE_COLORS[BASES.indexOf(base as typeof BASES[number])] }}>{base}</i>)}</div>
+        <div className="selected-weights" style={css({ "--columns": 21 })}>{weighted.map((value, index) => <i key={index} style={{ background: signedColor(value, maximum) }}>{value.toFixed(2)}</i>)}</div>
+      </div>
+    </div>
+    <label className="range-control"><b>Slide the stem filter</b><input type="range" min="0" max="2093" value={start} onChange={event => setStart(Number(event.target.value))} /><span>output position {start + 1}</span></label>
+    <div className="calculation-flow" data-feedback-id="Stem calculation">
+      <span><small>dot product</small><b>{dotProduct.toFixed(3)}</b><em>21 selected weights added</em></span><i>+</i>
+      <span><small>bias</small><b>{filter.bias.toFixed(3)}</b></span><i>→</i>
+      <span><small>before ReLU</small><b>{beforeRelu.toFixed(3)}</b></span><i>→</i>
+      <span className="result"><small>after ReLU</small><b>{output.toFixed(3)}</b><em>one tensor cell</em></span>
+    </div>
+    <div className="track-card">
+      <div className="mini-heading"><div><small>ONE OUTPUT ROW</small><h3>{filter.filter_human_label} across 61 nearby positions</h3></div><span>same kernel, new 21-base window at each step</span></div>
+      <div className="signal-bars" style={css({ "--columns": 61 })}>{zoomPositions.map(position => <i key={position} className={position === start ? "selected" : ""} style={{ height: `${3 + (track[position] ?? 0) / trackMax * 82}px` }} title={`output ${position + 1}: ${(track[position] ?? 0).toFixed(4)}`} />)}</div>
+      <BaseLetters sequence={sequence} positions={zoomPositions.map(position => position + 10)} />
+      <div className="axis"><span>output {zoomStart + 1}</span><span>input base below = center of each 21-base window</span><span>output {zoomStart + 61}</span></div>
+    </div>
+    <p className="takeaway"><b>Mental picture:</b> each of 512 stem filters marks where its learned local pattern is present. Stacking their 512 output rows creates a sparse feature map.</p>
+  </section>;
+}
+
+function ArchitectureMap({ selectedBlock, onBlock }: { selectedBlock: number; onBlock: (value: number) => void }) {
+  return <section className="architecture" id="architecture">
+    <SectionHeading step="0" eyebrow="MODEL MAP" title="The complete checkpoint, read from top to bottom">
+      Shapes are <b>channels × positions</b>. Every residual block uses the same two-path pattern, while dilation changes the positions read by its transform path.
+    </SectionHeading>
+    <div className="architecture-stack">
+      <article className="architecture-node input-node"><small>INPUT</small><h3>One-hot DNA</h3><b>4 × 2,114</b></article>
+      <FlowArrow label="valid Conv1D · k=21" />
+      <article className="architecture-node stem-node"><small>STEM</small><h3>512 local-feature detectors</h3><b>512 × 2,094</b><span>convolution → bias → ReLU</span></article>
+      <FlowArrow label="eight context-building blocks" />
+      <div className="residual-stack-map">
+        {DILATIONS.map((dilation, index) => {
+          const block = index + 1;
+          const inputLength = LENGTHS[index + 1];
+          const outputLength = LENGTHS[index + 2];
+          return <button key={block} className={selectedBlock === block ? "selected" : ""} onClick={() => onBlock(block)} data-feedback-id={`Residual block ${block} architecture`}>
+            <div className="block-title"><span>BLOCK {block}</span><b>dilation {dilation}</b><em>RF {RECEPTIVE_FIELDS[index + 1].toLocaleString()} bp</em></div>
+            <div className="block-input">512 × {inputLength.toLocaleString()}</div>
+            <div className="block-paths">
+              <span><small>TRANSFORM PATH</small><b>Conv k=3, d={dilation}</b><i>bias → ReLU</i></span>
+              <span><small>SHORTCUT PATH</small><b>crop {dilation} left + {dilation} right</b><i>preserve center features</i></span>
+            </div>
+            <div className="block-merge"><i>+</i><b>512 × {outputLength.toLocaleString()}</b></div>
+          </button>;
+        })}
+      </div>
+      <FlowArrow label="two parallel readers" />
+      <div className="head-map">
+        <article className="architecture-node"><small>PROFILE HEAD</small><h3>Where?</h3><b>1,000 positions</b><span>Conv1D k=75 → softmax</span></article>
+        <article className="architecture-node"><small>COUNT HEAD</small><h3>How much?</h3><b>1 scalar</b><span>global mean → dense</span></article>
+      </div>
+      <p className="parallel-note">The heads branch from the same final tensor. Neither head feeds into the other.</p>
+    </div>
+  </section>;
+}
+
+function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, marker, onMarker }: {
+  tensor: Tensor; values: Float32Array | null; mode: "full" | "zoom"; start: number; width: number; transfer: Transfer; gain: number; marker?: number; onMarker?: (value: number) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fullWidth = tensor.full_heatmap.width_positions;
+  const height = tensor.full_heatmap.height_channels;
+  const shownWidth = mode === "full" ? fullWidth : Math.min(width, fullWidth);
+  const safeStart = mode === "full" ? 0 : clamp(start, 0, fullWidth - shownWidth);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !values) return;
+    canvas.width = shownWidth;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    const image = context.createImageData(shownWidth, height);
+    for (let channel = 0; channel < height; channel += 1) {
+      for (let column = 0; column < shownWidth; column += 1) {
+        const sourceColumn = safeStart + column;
+        const level = transformValue(values[channel * fullWidth + sourceColumn], tensor.max, transfer, gain);
+        const color = heatColor(level).match(/\d+/g)!.map(Number);
+        const target = (channel * shownWidth + column) * 4;
+        image.data[target] = color[0]; image.data[target + 1] = color[1]; image.data[target + 2] = color[2]; image.data[target + 3] = 255;
+      }
+    }
+    context.putImageData(image, 0, 0);
+  }, [values, shownWidth, height, safeStart, fullWidth, tensor.max, transfer, gain]);
+  const click = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!onMarker) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    onMarker(Math.round(safeStart + clamp((event.clientX - rect.left) / rect.width, 0, 1) * (shownWidth - 1)));
+  };
+  const markerLeft = marker === undefined ? null : clamp((marker - safeStart) / Math.max(1, shownWidth - 1) * 100, 0, 100);
+  return <div className={`tensor-canvas ${mode}`}>
+    <div className="channel-axis"><span>channel 1</span><b>512 channels</b><span>channel 512</span></div>
+    <div className="canvas-shell" role={onMarker ? "button" : undefined} tabIndex={onMarker ? 0 : undefined} aria-label={onMarker ? "Move tensor zoom marker" : undefined} onClick={click} onKeyDown={event => {
+      if (!onMarker || marker === undefined) return;
+      if (event.key === "ArrowLeft") onMarker(clamp(marker - 1, safeStart, safeStart + shownWidth - 1));
+      if (event.key === "ArrowRight") onMarker(clamp(marker + 1, safeStart, safeStart + shownWidth - 1));
+    }}>{!values && <span className="loading">loading raw tensor…</span>}<canvas ref={canvasRef} />{markerLeft !== null && <i className="position-marker" style={{ left: `${markerLeft}%` }} />}</div>
+    <div className="axis"><span>{safeStart + 1}</span><span>{mode === "full" ? "every location shown · float32 values" : `${shownWidth} positions × all 512 channels`}</span><span>{safeStart + shownWidth}</span></div>
+  </div>;
+}
+
+function VectorCanvas({ values, signed = false }: { values: number[]; signed?: boolean }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    canvas.width = 1; canvas.height = values.length;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    const maximum = Math.max(...values.map(Math.abs), 1e-12);
+    const image = context.createImageData(1, values.length);
+    values.forEach((value, index) => {
+      const color = (signed ? signedColor(value, maximum) : heatColor(Math.sqrt(clamp(value / maximum, 0, 1)))).match(/\d+/g)!.map(Number);
+      const target = index * 4;
+      image.data[target] = color[0]; image.data[target + 1] = color[1]; image.data[target + 2] = color[2]; image.data[target + 3] = 255;
+    });
+    context.putImageData(image, 0, 0);
+  }, [values, signed]);
+  return <canvas ref={ref} className="vector-canvas" />;
+}
+
+function ResidualStory({ demo, block, setBlock }: { demo: Demo; block: number; setBlock: (value: number) => void }) {
+  const kernel = demo.residual_kernel_demos[block - 1];
+  const dilation = DILATIONS[block - 1];
+  const inputKey = (block === 1 ? "stem" : `res${block - 1}`) as TensorKey;
+  const inputTensor = tensorFor(demo, inputKey);
+  const inputValues = useTensorData(inputTensor);
+  const inputLength = LENGTHS[block];
+  const outputLength = LENGTHS[block + 1];
+  const [position, setPosition] = useState(kernel.trace.output_position_zero_based);
+  const outputChannel = kernel.output_channel_zero_based;
+
+  const calculation = useMemo(() => {
+    if (!inputValues) return null;
+    const tapPositions = [position, position + dilation, position + 2 * dilation];
+    const features = tapPositions.map(tap => Array.from({ length: 512 }, (_, channel) => inputValues[channel * inputLength + tap]));
+    const weights = [0, 1, 2].map(tap => kernel.weights_input_channels_by_taps.map(row => row[tap]));
+    const products = features.map((values, tap) => values.map((value, channel) => value * weights[tap][channel]));
+    const tapSums = products.map(values => values.reduce((sum, value) => sum + value, 0));
+    const convolution = tapSums.reduce((sum, value) => sum + value, 0);
+    const beforeRelu = convolution + kernel.bias;
+    const transformed = Math.max(0, beforeRelu);
+    const shortcut = features[1][outputChannel];
+    const output = transformed + shortcut;
+    const contributors = products.flatMap((values, tap) => values.map((value, channel) => ({ tap, channel, value, feature: features[tap][channel], weight: weights[tap][channel] }))).sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 6);
+    return { tapPositions, features, weights, products, tapSums, convolution, beforeRelu, transformed, shortcut, output, contributors };
+  }, [inputValues, inputLength, position, dilation, kernel, outputChannel]);
+
+  const globalOutput = inputCoordinate(position, outputLength);
+  const tapSpan = 2 * dilation + 1;
+
+  return <section className="story-section residual-story" id="residual">
+    <SectionHeading step="4" eyebrow="CONTEXT BUILDING" title="A residual block combines features across channels and distance">
+      The three taps are still a sliding convolution. Dilation changes only their spacing. At every tap, the kernel reads <b>all 512 feature channels</b>—not one channel in isolation.
+    </SectionHeading>
+    <div className="choice-row block-choices">{DILATIONS.map((value, index) => <button key={value} className={block === index + 1 ? "active" : ""} onClick={() => setBlock(index + 1)}><b>Block {index + 1}</b><small>d={value} · RF {RECEPTIVE_FIELDS[index + 1]}</small></button>)}</div>
+    <div className="dilation-explainer" data-feedback-id="Dilated three-tap slider">
+      <div className="mini-heading"><div><small>SAME SLIDING IDEA</small><h3>Three one-position taps span {tapSpan.toLocaleString()} positions</h3></div><span>kernel width = 3 · dilation = {dilation}</span></div>
+      <div className="tap-ruler">
+        {[0, 1, 2].map((tap) => <div className="tap-position" key={tap}><b>tap {tap + 1}</b><span>input-tensor position {(calculation?.tapPositions[tap] ?? position + tap * dilation) + 1}</span><em>one 512-value vector</em></div>)}
+        <div className="gap gap-one">skip {dilation - 1} positions</div><div className="gap gap-two">skip {dilation - 1} positions</div>
+      </div>
+      <label className="range-control"><b>Slide this dilated kernel</b><input type="range" min="0" max={outputLength - 1} value={position} onChange={event => setPosition(Number(event.target.value))} /><span>output {position + 1} / {outputLength.toLocaleString()}</span></label>
+      <div className="coordinate-readout"><b>Shared input coordinate: {globalOutput.toLocaleString()}</b><span>tap coordinates: {[0, 1, 2].map(tap => inputCoordinate(position + tap * dilation, inputLength)).join(", ")}</span><small>All coordinates on this page use the original 2,114-base input frame.</small></div>
+    </div>
+
+    <div className="tap-microscope" data-feedback-id="Cross-channel residual kernel">
+      <div className="mini-heading"><div><small>ONE REAL KERNEL SLICE</small><h3>Producing output channel {outputChannel + 1}</h3></div><span>selection: channel with the largest peak in this block</span></div>
+      <p className="selection-caveat">This is a useful high-activation example, not a claim that this channel is the most biologically important.</p>
+      <div className="tap-columns">
+        {[0, 1, 2].map(tap => <article key={tap}>
+          <h4>Tap {tap + 1}</h4><div className="vector-equation">
+            <span><VectorCanvas values={calculation?.features[tap] ?? Array(512).fill(0)} /><small>512 input features</small></span><b>×</b>
+            <span><VectorCanvas values={calculation?.weights[tap] ?? kernel.weights_input_channels_by_taps.map(row => row[tap])} signed /><small>512 learned weights</small></span><b>=</b>
+            <span><VectorCanvas values={calculation?.products[tap] ?? Array(512).fill(0)} signed /><small>512 products</small></span>
+          </div><strong>tap sum {calculation?.tapSums[tap].toFixed(4) ?? "…"}</strong>
+        </article>)}
+      </div>
+      <details><summary>Inspect the six largest products in this calculation</summary><div className="contributor-table"><span>tap</span><span>channel</span><span>feature</span><span>weight</span><span>product</span>{calculation?.contributors.map((item, index) => <div className="table-row" key={`${item.tap}-${item.channel}-${index}`}><span>{item.tap + 1}</span><span>{item.channel + 1}</span><span>{item.feature.toFixed(4)}</span><span>{item.weight.toFixed(4)}</span><b>{item.value.toFixed(4)}</b></div>)}</div></details>
+    </div>
+
+    <div className="residual-calculation" data-feedback-id="Residual block numeric flow">
+      <div className="transform-lane"><small>TRANSFORM PATH</small><span><em>3 tap sums</em><b>{calculation?.tapSums.map(value => value.toFixed(3)).join(" + ") ?? "loading"}</b></span><i>→</i><span><em>convolution sum</em><b>{calculation?.convolution.toFixed(4) ?? "…"}</b></span><i>+</i><span><em>bias</em><b>{kernel.bias.toFixed(4)}</b></span><i>→</i><span><em>before ReLU</em><b>{calculation?.beforeRelu.toFixed(4) ?? "…"}</b></span><i>→</i><span><em>after ReLU</em><b>{calculation?.transformed.toFixed(4) ?? "…"}</b></span></div>
+      <div className="shortcut-lane"><small>SHORTCUT PATH</small><span><em>same channel at the center tap</em><b>{calculation?.shortcut.toFixed(4) ?? "…"}</b></span><p>The shortcut tensor is cropped by {dilation} positions on the left and {dilation} on the right, so it aligns with the shorter convolution output.</p></div>
+      <div className="merge-lane"><span>transformed value</span><b>{calculation?.transformed.toFixed(4) ?? "…"}</b><i>+</i><span>preserved shortcut</span><b>{calculation?.shortcut.toFixed(4) ?? "…"}</b><i>=</i><strong>{calculation?.output.toFixed(4) ?? "…"}</strong><em>one cell in block {block} output · no ReLU after this addition</em></div>
+    </div>
+    <div className="receptive-field-meter"><span>cumulative receptive field</span>{RECEPTIVE_FIELDS.map((field, index) => <i key={field} className={index === block ? "active" : ""}><b>{field.toLocaleString()}</b><small>{index === 0 ? "stem" : `B${index}`}</small></i>)}<strong>→ profile head: 1,115 bp</strong></div>
+    <p className="takeaway"><b>Mental picture:</b> stem filters create local-feature channels. A residual kernel can give different weights to motif-like features in different channels and at three separated positions, allowing learned cooperation or competition while the shortcut preserves earlier features.</p>
+  </section>;
+}
+
+function MiniBars({ values, signed = false, count = 160 }: { values: number[]; signed?: boolean; count?: number }) {
+  const sampled = Array.from({ length: Math.min(count, values.length) }, (_, index) => {
+    const start = Math.floor(index * values.length / count);
+    const end = Math.max(start + 1, Math.floor((index + 1) * values.length / count));
+    return values.slice(start, end).reduce((sum, value) => sum + value, 0) / (end - start);
+  });
+  const maximum = Math.max(...sampled.map(Math.abs), 1e-12);
+  return <div className={`mini-bars ${signed ? "signed" : ""}`} style={css({ "--columns": sampled.length })}>{sampled.map((value, index) => <i key={index} style={{ height: `${3 + Math.abs(value) / maximum * 72}px`, background: signed ? signedColor(value, maximum) : heatColor(.25 + .75 * value / maximum) }} />)}</div>;
+}
+
+function OutputStory({ demo }: { demo: Demo }) {
+  const logits = demo.tensors.profile_logits.position_max;
+  const probabilities = demo.tensors.profile_probabilities.position_max;
+  const expectedCounts = demo.tensors.profile_signal.position_max;
+  const pooled = demo.head_demos.count_pooled_features;
+  const denseProducts = pooled.map((value, index) => value * demo.head_demos.count_dense_weights[index]);
+  const denseSum = denseProducts.reduce((sum, value) => sum + value, 0);
+  const profileSum = expectedCounts.reduce((sum, value) => sum + value, 0);
+  const profilePositions = Array.from({ length: 61 }, (_, index) => 470 + index);
+
+  return <section className="story-section output-story" id="outputs">
+    <SectionHeading step="5" eyebrow="TWO OUTPUT HEADS" title="The same final tensor answers “where?” and “how much?” in parallel">
+      Both heads read the final <b>512 × 1,074</b> backbone tensor. The profile head never feeds the count head, and the count head never feeds the profile head.
+    </SectionHeading>
+    <div className="shared-tensor"><small>SHARED BACKBONE OUTPUT</small><b>512 channels × 1,074 positions</b><span>one source branches into two computations</span></div>
+    <div className="branch-lines"><i /><i /></div>
+    <div className="output-branches">
+      <article data-feedback-id="Profile head stages">
+        <div className="mini-heading"><div><small>PROFILE HEAD · WHERE?</small><h3>A 1,000-position distribution</h3></div><span>Conv1D kernel 75 × 512 × 1</span></div>
+        <div className="head-stage"><b>1. Raw logits</b><span>unbounded scores from the width-75 convolution</span><MiniBars values={logits} signed /></div>
+        <FlowArrow label="softmax across all 1,000 positions" />
+        <div className="head-stage"><b>2. Profile probabilities</b><span>nonnegative; all 1,000 values sum to 1</span><MiniBars values={probabilities} /></div>
+        <FlowArrow label={`multiply every position by ${demo.outputs.predicted_total_count.toFixed(1)}`} />
+        <div className="head-stage final"><b>3. Expected counts per base</b><span>the displayed accessibility profile; sums to {profileSum.toFixed(1)}</span><MiniBars values={expectedCounts} /></div>
+        <div className="profile-zoom"><b>61-position zoom</b><div className="signal-bars" style={css({ "--columns": 61 })}>{profilePositions.map(position => <i key={position} style={{ height: `${3 + expectedCounts[position] / Math.max(...expectedCounts) * 82}px` }} />)}</div><BaseLetters sequence={demo.input.sequence} positions={profilePositions.map(position => position + 557)} /><div className="axis"><span>input 1,028</span><span>expected cuts per base</span><span>input 1,088</span></div></div>
+      </article>
+      <article data-feedback-id="Count head stages">
+        <div className="mini-heading"><div><small>COUNT HEAD · HOW MUCH?</small><h3>One total-count scalar</h3></div><span>global mean → dense</span></div>
+        <div className="count-stage"><b>512 × 1,074</b><span>mean each channel across all 1,074 positions</span><MiniBars values={pooled} /></div>
+        <FlowArrow label="one mean per channel" />
+        <div className="count-stage"><b>512 pooled features</b><span>multiply by 512 dense weights</span><MiniBars values={denseProducts} signed /></div>
+        <FlowArrow label="add products and bias" />
+        <div className="count-equation"><span>dense products <b>{denseSum.toFixed(3)}</b></span><i>+</i><span>bias <b>{demo.head_demos.count_dense_bias.toFixed(3)}</b></span><i>=</i><span>log-count <b>{demo.outputs.logcount.toFixed(3)}</b></span></div>
+        <FlowArrow label="exp(log-count) − 1" />
+        <div className="total-count"><strong>{demo.outputs.predicted_total_count.toFixed(1)}</strong><span>predicted total cuts</span></div>
+      </article>
+    </div>
+    <div className="output-identity"><b>Final identity</b><span>profile probability at each base</span><i>×</i><span>one predicted total count</span><i>=</i><strong>expected counts at each base</strong></div>
+  </section>;
+}
+
+function TensorInspector({ demo }: { demo: Demo }) {
+  const [stage, setStage] = useState<TensorKey>("stem");
+  const [view, setView] = useState<InspectorView>("tensor");
+  const [transfer, setTransfer] = useState<Transfer>("sqrt");
+  const [gain, setGain] = useState(1.8);
+  const tensor = tensorFor(demo, stage);
+  const values = useTensorData(tensor);
+  const length = tensor.full_heatmap.width_positions;
+  const [center, setCenter] = useState(Math.floor(length / 2));
+  const [channel, setChannel] = useState(tensor.selected_channels_zero_based[0]);
+  const zoomWidth = 61;
+  const zoomStart = clamp(center - Math.floor(zoomWidth / 2), 0, length - zoomWidth);
+  const positions = Array.from({ length: zoomWidth }, (_, index) => zoomStart + index);
+  const inputPositions = positions.map(position => Math.round(offsetForLength(length) + position));
+
+  const chooseStage = (nextStage: TensorKey) => {
+    const nextTensor = tensorFor(demo, nextStage);
+    setStage(nextStage);
+    setCenter(Math.floor(nextTensor.full_heatmap.width_positions / 2));
+    setChannel(nextTensor.selected_channels_zero_based[0]);
+  };
+
+  const channelValues = values ? Array.from({ length }, (_, position) => values[channel * length + position]) : [];
+  const metric = view === "max" ? tensor.position_max : tensor.position_mean;
+  const track = view === "channel" ? channelValues : metric;
+  const trackMax = Math.max(...track, 1e-12);
+
+  return <section className="inspector" id="tensor-inspector">
+    <SectionHeading step="6" eyebrow="SUPPORTING INSPECTION TOOL" title="Inspect the raw 512 × N tensors after learning the computation">
+      The heatmap shows every channel and position. Display transforms can reveal weak values, but they never alter the underlying float32 activations.
+    </SectionHeading>
+    <div className="inspector-controls">
+      <label><span>Layer</span><select value={stage} onChange={event => chooseStage(event.target.value as TensorKey)}><option value="stem">Stem · 512 × 2,094</option>{DILATIONS.map((dilation, index) => <option key={dilation} value={`res${index + 1}`}>Residual {index + 1} · 512 × {LENGTHS[index + 2].toLocaleString()}</option>)}</select></label>
+      <div><span>Presentation</span><div className="segmented">{(["tensor", "channel", "max", "mean"] as InspectorView[]).map(option => <button key={option} className={view === option ? "active" : ""} onClick={() => setView(option)}>{option === "tensor" ? "Raw heatmap" : option === "channel" ? "One channel" : option === "max" ? "Max collapse" : "Mean collapse"}</button>)}</div></div>
+      {view === "tensor" && <label><span>Weak-value transform</span><select value={transfer} onChange={event => setTransfer(event.target.value as Transfer)}><option value="linear">Linear · most literal</option><option value="sqrt">Square root · reveal weak</option><option value="log">Log · reveal more weak</option></select></label>}
+      {view === "tensor" && <label><span>Brightness gain · {gain.toFixed(1)}×</span><input type="range" min="0.5" max="5" step="0.1" value={gain} onChange={event => setGain(Number(event.target.value))} /></label>}
+      {view === "channel" && <label><span>Channel · {channel + 1}</span><input type="range" min="0" max="511" value={channel} onChange={event => setChannel(Number(event.target.value))} /></label>}
+    </div>
+    <div className="truth-note"><b>{(tensor.zero_fraction * 100).toFixed(1)}% exact zeros</b><span>Blank-looking areas are part of the real sparse tensor, not missing data.</span><em>File: raw float32 · no 8-bit rounding</em></div>
+    {view === "tensor" ? <>
+      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE TENSOR</small><h3>All 512 channels × {length.toLocaleString()} positions</h3></div><span>click to move the zoom below</span></div><TensorCanvas tensor={tensor} values={values} mode="full" start={0} width={length} transfer={transfer} gain={gain} marker={center} onMarker={setCenter} /></div>
+      <FlowArrow label="the outlined position opens here" />
+      <div className="zoom-view-card"><div className="mini-heading"><div><small>ZOOM</small><h3>All 512 channels × 61 consecutive positions</h3></div><span>same tensor, larger cells</span></div><TensorCanvas tensor={tensor} values={values} mode="zoom" start={zoomStart} width={zoomWidth} transfer={transfer} gain={gain} marker={center} /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} /></div>
+    </> : <div className="collapse-card">
+      <div className="mini-heading"><div><small>{view === "channel" ? `CHANNEL ${channel + 1}` : `${view.toUpperCase()} ACROSS 512 CHANNELS`}</small><h3>{view === "channel" ? "One learned feature track" : view === "max" ? "Largest channel value at every position" : "Average channel value at every position"}</h3></div><span>{length.toLocaleString()} original positions</span></div>
+      <div className="signal-bars zoomed" style={css({ "--columns": zoomWidth })}>{positions.map(position => <i key={position} style={{ height: `${3 + (track[position] ?? 0) / trackMax * 150}px` }} />)}</div><BaseLetters sequence={demo.input.sequence} positions={inputPositions} />
+      <label className="range-control"><b>Move the 61-position window</b><input type="range" min="30" max={length - 31} value={center} onChange={event => setCenter(Number(event.target.value))} /><span>input {inputCoordinate(center, length)}</span></label>
+      <p className="view-definition">{view === "max" ? "Max collapse retains only the strongest of 512 values at each position." : view === "mean" ? "Mean collapse averages the same 512 channels at every position. A sum would have the identical shape, multiplied everywhere by 512." : "A channel is a learned feature dimension. High activation says this feature responded here; it does not by itself explain causality."}</p>
+    </div>}
+  </section>;
+}
+
+type FeedbackAnnotation = { id: number; quote: string; note: string; context: string };
+const FEEDBACK_STORAGE_KEY = "sequence-cnn-explainer-feedback-v2";
+
+function FeedbackLayer() {
+  const [open, setOpen] = useState(false);
+  const [quote, setQuote] = useState("");
+  const [context, setContext] = useState("Explainer");
+  const [note, setNote] = useState("");
+  const [annotations, setAnnotations] = useState<FeedbackAnnotation[]>([]);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try { setAnnotations(JSON.parse(localStorage.getItem(FEEDBACK_STORAGE_KEY) ?? "[]")); } catch { setAnnotations([]); }
+      setReady(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  useEffect(() => { if (ready) localStorage.setItem(FEEDBACK_STORAGE_KEY, JSON.stringify(annotations)); }, [annotations, ready]);
+  useEffect(() => {
+    if (!open) return;
+    const select = () => {
+      const selection = window.getSelection();
+      const text = selection?.toString().trim();
+      if (!text || !selection?.anchorNode) return;
+      const element = selection.anchorNode.parentElement?.closest("[data-feedback-id], section");
+      if (element?.closest(".feedback-drawer")) return;
+      setQuote(text); setContext(element?.getAttribute("data-feedback-id") || element?.id || "Explainer section");
+    };
+    document.addEventListener("mouseup", select);
+    return () => document.removeEventListener("mouseup", select);
+  }, [open]);
+  const save = () => {
+    if (!quote.trim() || !note.trim()) return;
+    setAnnotations(items => [...items, { id: Date.now(), quote: quote.trim(), note: note.trim(), context }]); setQuote(""); setNote("");
+  };
+  const markdown = annotations.map((item, index) => `${index + 1}. **${item.context}**\n\n> ${item.quote.replaceAll("\n", "\n> ")}\n\n${item.note}`).join("\n\n---\n\n");
+  const download = () => { const url = URL.createObjectURL(new Blob([`# Sequence CNN Explainer feedback\n\n${markdown}`], { type: "text/markdown" })); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "sequence-cnn-explainer-feedback-v2.md"; anchor.click(); URL.revokeObjectURL(url); };
+  return <>
+    <button className="feedback-toggle" onClick={() => setOpen(value => !value)} aria-expanded={open}>✎ {open ? "Close annotations" : `Annotate${annotations.length ? ` (${annotations.length})` : ""}`}</button>
+    {open && <aside className="feedback-drawer" aria-label="Feedback annotations">
+      <div className="drawer-head"><div><small>FEEDBACK MODE</small><h2>Highlight text, then annotate</h2></div><button onClick={() => setOpen(false)} aria-label="Close">×</button></div>
+      <div className="drawer-compose"><div><label>Quoted target<textarea value={quote} onChange={event => setQuote(event.target.value)} rows={3} placeholder="Highlight words anywhere above, or paste them here." /></label><small>From: {context}</small></div><label>Your note<textarea value={note} onChange={event => setNote(event.target.value)} rows={3} placeholder="What is confusing, incorrect, or missing?" /></label><button disabled={!quote.trim() || !note.trim()} onClick={save}>Save annotation</button></div>
+      <div className="saved-annotations">{annotations.map((item, index) => <article key={item.id}><small>#{index + 1} · {item.context}</small><blockquote>{item.quote}</blockquote><p>{item.note}</p><button onClick={() => setAnnotations(items => items.filter(saved => saved.id !== item.id))}>Delete</button></article>)}{annotations.length > 0 && <div className="export-actions"><button onClick={() => navigator.clipboard.writeText(markdown)}>Copy Markdown</button><button onClick={download}>Download .md</button></div>}</div>
+      <p className="drawer-note">The drawer stays at the bottom, so the full page width remains available for highlighting.</p>
+    </aside>}
+  </>;
+}
+
+export default function Home() {
+  const [preset, setPreset] = useState("k562");
+  const [windowStart, setWindowStart] = useState(PRESETS.k562.filter_demos[0].peak_position_zero_based);
+  const [block, setBlock] = useState(1);
+  const [colorGain, setColorGain] = useState(1);
+  const demo = PRESETS[preset];
+  return <main>
+    <header className="topbar"><a href="#top" className="brand"><b>SEQ</b><span>CNN EXPLAINER</span></a><nav><a href="#architecture">Model map</a><a href="#stem">Stem</a><a href="#residual">Residual blocks</a><a href="#outputs">Outputs</a><a href="#tensor-inspector">Tensors</a></nav><label><span>Demo</span><select value={preset} onChange={event => { const nextPreset = event.target.value; const nextDemo = PRESETS[nextPreset]; setPreset(nextPreset); setWindowStart(nextDemo.filter_demos[0].peak_position_zero_based); setBlock(1); }}><option value="k562">Real K562 checkpoint</option><option value="synthetic">Same model · synthetic DNA</option></select></label></header>
+    <div id="top" />
+    <section className="hero">
+      <div><p>ONE CALCULATION · FOLLOWED TOP TO BOTTOM</p><h1>How a DNA sequence becomes an accessibility prediction</h1><span>Start with bases. Watch a local detector slide. Then see dilated blocks combine learned features across distance and channels.</span></div>
+      <aside><small>RUNNING EXAMPLE</small><b>{demo.input.locus_label}</b><span>Published ChromBPNet no-bias model · fold 0</span><em>forward-pass activations from the extracted HDF5 checkpoint</em></aside>
+    </section>
+    <div className="promise-strip"><b>The mental model</b><span>detect local patterns</span><i>↓</i><span>combine features over wider context</span><i>↓</i><span>predict where and how much</span></div>
+
+    <ArchitectureMap selectedBlock={block} onBlock={value => { setBlock(value); document.getElementById("residual")?.scrollIntoView({ behavior: "smooth" }); }} />
+    <FlowArrow label="start with one real input window" />
+    <section className="story-section input-story" id="input">
+      <SectionHeading step="1" eyebrow="SEQUENCE INPUT" title="Each DNA base is one column, not a tiny image">
+        The model receives a <b>4 × 2,114</b> one-hot matrix. A, C, G, and T are the four rows; every position contains one 1 and three 0s.
+      </SectionHeading>
+      <SequenceOverview sequence={demo.input.sequence} start={windowStart} onStart={setWindowStart} />
+      <label className="range-control"><b>Move the selected input window</b><input type="range" min="0" max="2093" value={windowStart} onChange={event => setWindowStart(Number(event.target.value))} /><span>{windowStart + 1}–{windowStart + 21}</span></label>
+      <OneHotZoom sequence={demo.input.sequence} start={windowStart} />
+      <p className="takeaway"><b>Mental picture:</b> sequence position runs left to right. The four base rows are channels, not height in a biological image.</p>
+    </section>
+    <FlowArrow label="apply 512 different local detectors" />
+    <StemStory demo={demo} start={windowStart} setStart={setWindowStart} gain={colorGain} />
+    <FlowArrow label="stack all 512 output rows" />
+    <section className="bridge-section" data-feedback-id="Stem tensor bridge"><div><small>THE FIRST FEATURE TENSOR</small><h2>512 learned feature rows × 2,094 positions</h2><p>Most cells are zero after ReLU. A bright cell means one learned detector responded at one position; it does not yet say why the final prediction changed.</p></div><label><span>Kernel color saturation · {colorGain.toFixed(1)}×</span><input type="range" min="0.5" max="2" step="0.1" value={colorGain} onChange={event => setColorGain(Number(event.target.value))} /></label></section>
+    <FlowArrow label="build wider context through eight blocks" />
+    <ResidualStory key={`${preset}-${block}`} demo={demo} block={block} setBlock={setBlock} />
+    <FlowArrow label="read the final 512 × 1,074 tensor two ways" />
+    <OutputStory demo={demo} />
+    <FlowArrow label="optional: inspect every tensor value" />
+    <TensorInspector demo={demo} />
+    <section className="attribution-note"><div><small>NOT PART OF THIS FORWARD-PASS DEMO</small><h2>Input attribution requires an additional analysis</h2></div><p>DeepLIFT, SHAP, gradients, or another attribution method must generate base-level attribution scores. Activations alone show what each layer computed, not which input bases caused the final prediction.</p></section>
+    <footer><b>Sequence CNN Explainer · structural prototype</b><span>Model values: published K562 ChromBPNet checkpoint · coordinates: input-relative unless explicitly labeled</span></footer>
+    <FeedbackLayer />
+  </main>;
+}

@@ -1,0 +1,22 @@
+.DS_Store
+.venv/
+demo/
+models/
+output/
+tmp/
+local_site_work/
+
+# Local build products
+**/node_modules/
+/node_modules
+**/.next/
+**/.vinext/
+**/.wrangler/
+**/dist/
+**/tsconfig.tsbuildinfo
+
+# Local environment and logs
+**/.env*
+*.log
+**/__pycache__/
+*.pyc
