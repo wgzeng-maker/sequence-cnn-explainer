@@ -136,6 +136,10 @@ def main() -> None:
     parser.add_argument("--preset-id", default="synthetic")
     parser.add_argument("--locus-label", default="Synthetic teaching sequence")
     parser.add_argument("--coordinate-system", default="sequence positions 1–2,114")
+    parser.add_argument("--repository", default="kundajelab/encode-chrombpnet-DNASE-ENCSR000EOT-ENCSR296UHQ")
+    parser.add_argument("--experiment", default="ENCSR000EOT")
+    parser.add_argument("--biosample", default="K562")
+    parser.add_argument("--assay", default="DNASE-seq")
     parser.add_argument("--tensor-dir", type=Path, help="Directory for browser tensor binaries")
     args = parser.parse_args()
 
@@ -232,10 +236,10 @@ def main() -> None:
     exported = {
         "provenance": {
             "model": args.model.name,
-            "repository": "kundajelab/encode-chrombpnet-DNASE-ENCSR000EOT-ENCSR296UHQ",
-            "experiment": "ENCSR000EOT",
-            "biosample": "K562",
-            "assay": "DNASE-seq",
+            "repository": args.repository,
+            "experiment": args.experiment,
+            "biosample": args.biosample,
+            "assay": args.assay,
             "fold": 0,
             "model_variant": "chrombpnet_nobias",
         },

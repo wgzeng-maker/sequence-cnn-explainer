@@ -11,7 +11,7 @@ async function loadDemo(name) {
   return JSON.parse(await readFile(new URL(`app/data/${name}-activations.json`, root), "utf8"));
 }
 
-for (const preset of ["k562-peak", "synthetic"]) {
+for (const preset of ["k562-peak", "gm21515", "synthetic"]) {
   test(`${preset} tensors preserve the published checkpoint shapes and raw values`, async () => {
     const demo = await loadDemo(preset);
     assert.equal(demo.input.sequence.length, 2114);
@@ -139,6 +139,9 @@ test("the page teaches one connected flow and avoids the discarded GC overview",
   assert.match(page, /complete representation first/);
   assert.match(page, /Extrema color strength/);
   assert.match(page, /whole-length-frame/);
+  assert.match(page, /Profile output · 512 × 1,074 → 1 × 1,000/);
+  assert.match(page, /1,074 − 75 \+ 1 = 1,000/);
+  assert.match(page, /GM21515 ATAC checkpoint/);
   assert.match(page, /nextStage === "stem" \? \(computation === "output" \? "relu" : computation\) : layer === "stem" \? "output"/);
   assert.match(page, /type="number" min="1" max="512"/);
   assert.doesNotMatch(page, /GC fraction/i);
@@ -152,4 +155,7 @@ test("the dilation evolution demo separates geometric reach from measured contri
   assert.match(page, /LEARNED CORRECTION/);
   assert.match(page, /Each tap reads all 512 channels/);
   assert.match(page, /38,400 activation × weight products/);
+  assert.match(page, /WHOLE TENSOR → MAGNIFIED FILMSTRIP/);
+  assert.match(page, /FullTensorMagnifier/);
+  assert.match(page, /12 contiguous channels/);
 });

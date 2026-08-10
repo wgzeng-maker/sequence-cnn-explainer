@@ -109,6 +109,51 @@ function StageFilmstrip({ raw, channels, globalCenter, stage, setStage, sharedSc
   </div>;
 }
 
+function FullTensorMagnifier({ tensorKey, raw, globalCenter, setGlobalCenter, channelStart, setChannelStart }: {
+  tensorKey: TensorKey; raw?: Float32Array; globalCenter: number; setGlobalCenter: (value: number) => void; channelStart: number; setChannelStart: (value: number) => void;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const length = LENGTHS[KEYS.indexOf(tensorKey)];
+  const localCenter = globalToLocal(globalCenter, length);
+  const localStart = clamp(localCenter - 30, 0, length - 61);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || !raw) return;
+    canvas.width = length; canvas.height = 512;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    const image = context.createImageData(length, 512);
+    let maximum = 1e-12;
+    raw.forEach(value => { maximum = Math.max(maximum, Math.abs(value)); });
+    for (let channel = 0; channel < 512; channel += 1) for (let position = 0; position < length; position += 1) {
+      const rgb = color(raw[channel * length + position], maximum);
+      const target = (channel * length + position) * 4;
+      image.data[target] = rgb[0]; image.data[target + 1] = rgb[1]; image.data[target + 2] = rgb[2]; image.data[target + 3] = 255;
+    }
+    context.putImageData(image, 0, 0);
+  }, [raw, length]);
+  const move = (clientX: number, clientY: number, element: HTMLDivElement) => {
+    const rect = element.getBoundingClientRect();
+    const local = Math.round(clamp((clientX - rect.left) / rect.width, 0, 1) * (length - 1));
+    const channel = Math.round(clamp((clientY - rect.top) / rect.height, 0, 1) * 511) - 6;
+    setGlobalCenter(clamp(localToGlobal(local, length), 558, 1557));
+    setChannelStart(clamp(channel, 0, 500));
+  };
+  return <div className={styles.magnifierOverview}>
+    <div className={styles.magnifierHeading}><div><small>WHOLE SELECTED TENSOR</small><h3>{LABELS[KEYS.indexOf(tensorKey)]} · 512 × {length.toLocaleString()}</h3></div><span>move across the heatmap to choose a 12-channel × 61-position window</span></div>
+    <div className={styles.fullTensorShell} role="button" tabIndex={0} aria-label="Move the tensor magnifier across channels and input-aligned positions" onPointerMove={event => move(event.clientX, event.clientY, event.currentTarget)} onPointerDown={event => move(event.clientX, event.clientY, event.currentTarget)} onKeyDown={event => {
+      if (event.key === "ArrowLeft") setGlobalCenter(clamp(globalCenter - 1, 558, 1557));
+      if (event.key === "ArrowRight") setGlobalCenter(clamp(globalCenter + 1, 558, 1557));
+      if (event.key === "ArrowUp") setChannelStart(clamp(channelStart - 1, 0, 500));
+      if (event.key === "ArrowDown") setChannelStart(clamp(channelStart + 1, 0, 500));
+    }}>
+      {!raw && <span>loading full tensor…</span>}<canvas ref={ref} />
+      <i className={styles.magnifierSelection} style={{ left: `${localStart / length * 100}%`, width: `${61 / length * 100}%`, top: `${channelStart / 512 * 100}%`, height: `${12 / 512 * 100}%` }}><b /></i>
+    </div>
+    <div className={styles.magnifierReadout}><span>channels {channelStart + 1}–{channelStart + 12}</span><span>input-aligned positions {globalCenter - 30}–{globalCenter + 30}</span><span>drag, hover, touch, or use arrow keys</span></div>
+  </div>;
+}
+
 function FeatureReach({ stemRaw, channels, globalCenter, stage }: { stemRaw?: Float32Array; channels: number[]; globalCenter: number; stage: number }) {
   const events = useMemo(() => {
     if (!stemRaw) return [];
@@ -248,11 +293,12 @@ function ProfileReader({ raw, globalCenter }: { raw: RawTensors; globalCenter: n
 
 export default function DilationTracePage() {
   const { raw, error } = useRawTensors();
-  const channels = demo.tensors.stem.selected_channels_zero_based;
   const [stage, setStage] = useState(1);
   const [globalCenter, setGlobalCenter] = useState(1058);
+  const [channelStart, setChannelStart] = useState(clamp(demo.tensors.stem.selected_channels_zero_based[0] - 6, 0, 500));
   const [playing, setPlaying] = useState(false);
   const [sharedScale, setSharedScale] = useState(false);
+  const channels = Array.from({ length: 12 }, (_, index) => channelStart + index);
 
   useEffect(() => {
     if (!playing) return;
@@ -284,9 +330,10 @@ export default function DilationTracePage() {
     {error && <div className={styles.tensorError} role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
 
     <section className={styles.section}>
-      <div className={styles.sectionHeading}><span>1</span><div><small>TENSOR FILMSTRIP</small><h2>The same 12 channels and 61 input-aligned positions through every stage</h2><p>Rows retain the same channel numbers across panels. This makes changes comparable; these channels were chosen by high stem activation, not known biological importance.</p></div></div>
+      <div className={styles.sectionHeading}><span>1</span><div><small>WHOLE TENSOR → MAGNIFIED FILMSTRIP</small><h2>Select one tensor region, then compare that exact region through every stage</h2><p>The large heatmap establishes where the excerpt comes from. The magnifier chooses 12 contiguous channels and 61 input-aligned positions; every small panel below uses that same selection.</p></div></div>
+      <FullTensorMagnifier tensorKey={KEYS[stage]} raw={raw[KEYS[stage]]} globalCenter={globalCenter} setGlobalCenter={setGlobalCenter} channelStart={channelStart} setChannelStart={setChannelStart} />
+      <div className={styles.magnifiedLabel}><b>MAGNIFIED COMPARISON</b><span>channels {channelStart + 1}–{channelStart + 12} · input {globalCenter - 30}–{globalCenter + 30}</span></div>
       <StageFilmstrip raw={raw} channels={channels} globalCenter={globalCenter} stage={stage} setStage={setStage} sharedScale={sharedScale} />
-      <BaseRow globalCenter={globalCenter} />
     </section>
 
     <section className={styles.section}>

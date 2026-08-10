@@ -2,19 +2,21 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import k562Peak from "./data/k562-peak-activations.json";
+import gm21515 from "./data/gm21515-activations.json";
 import synthetic from "./data/synthetic-activations.json";
 import { loadFloat32Tensor } from "./tensor-loader";
 
 type Demo = typeof k562Peak;
 type Tensor = Demo["tensors"]["stem"];
 type TensorKey = "stem" | "res1" | "res2" | "res3" | "res4" | "res5" | "res6" | "res7" | "res8";
+type LayerKey = TensorKey | "profile";
 type Transfer = "linear" | "sqrt" | "log";
 type InspectorView = "tensor" | "channel" | "max" | "mean" | "min";
 type ComputationStage = "conv" | "bias" | "relu" | "output";
 
 const BASES = ["A", "C", "G", "T"] as const;
 const BASE_COLORS = ["#e96b54", "#4f97b2", "#e5b33f", "#72a17e"];
-const PRESETS: Record<string, Demo> = { k562: k562Peak, synthetic };
+const PRESETS: Record<string, Demo> = { k562: k562Peak, gm21515, synthetic };
 const DILATIONS = [2, 4, 8, 16, 32, 64, 128, 256];
 const LENGTHS = [2114, 2094, 2090, 2082, 2066, 2034, 1970, 1842, 1586, 1074];
 const RECEPTIVE_FIELDS = [21, 25, 33, 49, 81, 145, 273, 529, 1041];
@@ -324,8 +326,8 @@ function ArchitectureMap({ selectedBlock, onBlock }: { selectedBlock: number; on
   </section>;
 }
 
-function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, signed = false, marker, onMarker }: {
-  tensor: Tensor; values: Float32Array | null; mode: "full" | "zoom"; start: number; width: number; transfer: Transfer; gain: number; signed?: boolean; marker?: number; onMarker?: (value: number) => void;
+function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, signed = false, marker, onMarker, selectionStart, selectionWidth }: {
+  tensor: Tensor; values: Float32Array | null; mode: "full" | "zoom"; start: number; width: number; transfer: Transfer; gain: number; signed?: boolean; marker?: number; onMarker?: (value: number) => void; selectionStart?: number; selectionWidth?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fullWidth = tensor.full_heatmap.width_positions;
@@ -364,13 +366,15 @@ function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, sign
     onMarker(Math.round(safeStart + clamp((event.clientX - rect.left) / rect.width, 0, 1) * (shownWidth - 1)));
   };
   const markerLeft = marker === undefined ? null : clamp((marker - safeStart) / Math.max(1, shownWidth - 1) * 100, 0, 100);
+  const selectionLeft = selectionStart === undefined ? null : clamp((selectionStart - safeStart) / shownWidth * 100, 0, 100);
+  const selectionPercent = selectionWidth === undefined ? null : clamp(selectionWidth / shownWidth * 100, 0, 100);
   return <div className={`tensor-canvas ${mode}`}>
     <div className="channel-axis"><span>channel 1</span><b>512 channels</b><span>channel 512</span></div>
     <div className="canvas-shell" role={onMarker ? "button" : undefined} tabIndex={onMarker ? 0 : undefined} aria-label={onMarker ? "Move tensor zoom marker" : undefined} onClick={click} onKeyDown={event => {
       if (!onMarker || marker === undefined) return;
       if (event.key === "ArrowLeft") onMarker(clamp(marker - 1, safeStart, safeStart + shownWidth - 1));
       if (event.key === "ArrowRight") onMarker(clamp(marker + 1, safeStart, safeStart + shownWidth - 1));
-    }}>{!values && <span className="loading">loading raw tensor…</span>}<canvas ref={canvasRef} />{markerLeft !== null && <i className="position-marker" style={{ left: `${markerLeft}%` }} />}</div>
+    }}>{!values && <span className="loading">loading raw tensor…</span>}<canvas ref={canvasRef} />{markerLeft !== null && <i className="position-marker" style={{ left: `${markerLeft}%` }} />}{selectionLeft !== null && selectionPercent !== null && <i className="tensor-window-marker" style={{ left: `${selectionLeft}%`, width: `${selectionPercent}%` }} />}</div>
     <div className="axis"><span>{safeStart + 1}</span><span>{mode === "full" ? "every location shown · float32 values" : `${shownWidth} positions × all 512 channels`}</span><span>{safeStart + shownWidth}</span></div>
   </div>;
 }
@@ -561,14 +565,46 @@ function OutputStory({ demo }: { demo: Demo }) {
   </section>;
 }
 
+function ProfileLayerView({ demo, finalTensor, values, error }: { demo: Demo; finalTensor: Tensor; values: Float32Array | null; error: string | null }) {
+  const [profilePosition, setProfilePosition] = useState(500);
+  const logits = demo.tensors.profile_logits.position_max;
+  const probabilities = demo.tensors.profile_probabilities.position_max;
+  const expected = demo.tensors.profile_signal.position_max;
+  const zoomStart = clamp(profilePosition - 30, 0, 939);
+  const zoomPositions = Array.from({ length: 61 }, (_, index) => zoomStart + index);
+  const inputPositions = zoomPositions.map(position => position + 557);
+  const chooseFromTensor = (tensorPosition: number) => setProfilePosition(clamp(tensorPosition - 37, 0, 999));
+  const inputWidth = 1074 / MAX_TENSOR_LENGTH * 100;
+  const outputWidth = 1000 / MAX_TENSOR_LENGTH * 100;
+  return <div className="profile-layer-view">
+    <div className="computation-note"><b>Profile head · valid convolution</b><span>The final 512 × 1,074 tensor is the input. A learned 75-position kernel reads all 512 channels and produces 1,000 logits: 1,074 − 75 + 1 = 1,000.</span></div>
+    {error && <div className="tensor-error" role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
+    <div className="full-view-card profile-before">
+      <div className="mini-heading"><div><small>BEFORE · FINAL BACKBONE TENSOR</small><h3>512 channels × 1,074 positions</h3></div><span>the outlined 75-position window produces one selected logit</span></div>
+      <div className="whole-length-frame" style={{ width: `${inputWidth}%` }}><TensorCanvas tensor={finalTensor} values={values} mode="full" start={0} width={1074} transfer="sqrt" gain={1.8} marker={undefined} onMarker={chooseFromTensor} selectionStart={profilePosition} selectionWidth={75} /></div>
+      <label className="range-control"><b>Move the width-75 profile kernel</b><input type="range" min="0" max="999" value={profilePosition} onChange={event => setProfilePosition(Number(event.target.value))} /><span>output {profilePosition + 1} / 1,000</span></label>
+    </div>
+    <FlowArrow label="Conv1D · kernel 75 × 512 × 1 · valid padding" />
+    <div className="profile-stage-stack" style={{ width: `${outputWidth}%` }}>
+      <article><div className="mini-heading"><div><small>AFTER CONVOLUTION</small><h3>1 × 1,000 raw profile logits</h3></div><span>one score per valid kernel position</span></div><SignalCanvas track={logits} start={0} width={1000} marker={profilePosition} signed onMarker={setProfilePosition} label="Select a raw profile logit" /></article>
+      <FlowArrow label="softmax across all 1,000 logits" />
+      <article><div className="mini-heading"><div><small>NORMALIZED PROFILE SHAPE</small><h3>1 × 1,000 probabilities</h3></div><span>nonnegative · sums to 1</span></div><SignalCanvas track={probabilities} start={0} width={1000} marker={profilePosition} signed={false} onMarker={setProfilePosition} label="Select a profile probability" /></article>
+      <FlowArrow label={`multiply every position by total count ${demo.outputs.predicted_total_count.toFixed(1)}`} />
+      <article><div className="mini-heading"><div><small>FINAL PROFILE OUTPUT</small><h3>1 × 1,000 expected counts</h3></div><span>same profile shape · biologically scaled height</span></div><SignalCanvas track={expected} start={0} width={1000} marker={profilePosition} signed={false} onMarker={setProfilePosition} label="Select an expected-count position" /></article>
+    </div>
+    <FlowArrow label="the selected profile position opens here" />
+    <div className="zoom-view-card"><div className="mini-heading"><div><small>PROFILE ZOOM</small><h3>61 of the 1,000 output positions</h3></div><span>base below = center of the width-75 final-tensor window</span></div><SignalCanvas track={expected} start={zoomStart} width={61} marker={profilePosition} signed={false} label="Expected-count profile zoom" /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} /></div>
+  </div>;
+}
+
 function TensorInspector({ demo }: { demo: Demo }) {
-  const [layer, setLayer] = useState<TensorKey>("stem");
+  const [layer, setLayer] = useState<LayerKey>("stem");
   const [computation, setComputation] = useState<ComputationStage>("relu");
   const [view, setView] = useState<InspectorView>("tensor");
   const [transfer, setTransfer] = useState<Transfer>("sqrt");
   const [gain, setGain] = useState(1.8);
   const [extremaGain, setExtremaGain] = useState(1.8);
-  const tensor = inspectorTensorFor(demo, layer, computation);
+  const tensor = layer === "profile" ? tensorFor(demo, "res8") : inspectorTensorFor(demo, layer, computation);
   const { values, error } = useTensorData(tensor);
   const length = tensor.full_heatmap.width_positions;
   const [center, setCenter] = useState(Math.floor(length / 2));
@@ -581,7 +617,12 @@ function TensorInspector({ demo }: { demo: Demo }) {
   const wholeWidthPercent = length / MAX_TENSOR_LENGTH * 100;
   const croppedPerSide = (MAX_TENSOR_LENGTH - length) / 2;
 
-  const chooseStage = (nextStage: TensorKey) => {
+  const chooseStage = (nextStage: LayerKey) => {
+    if (nextStage === "profile") {
+      const finalTensor = tensorFor(demo, "res8");
+      setLayer("profile"); setComputation("output"); setCenter(Math.floor(finalTensor.full_heatmap.width_positions / 2)); setChannel(finalTensor.selected_channels_zero_based[0]);
+      return;
+    }
     const nextComputation = nextStage === "stem" ? (computation === "output" ? "relu" : computation) : layer === "stem" ? "output" : computation;
     const nextTensor = inspectorTensorFor(demo, nextStage, nextComputation);
     setLayer(nextStage);
@@ -591,6 +632,7 @@ function TensorInspector({ demo }: { demo: Demo }) {
   };
 
   const chooseComputation = (next: ComputationStage) => {
+    if (layer === "profile") return;
     const nextTensor = inspectorTensorFor(demo, layer, next);
     setComputation(next);
     setCenter(Math.floor(nextTensor.full_heatmap.width_positions / 2));
@@ -602,12 +644,21 @@ function TensorInspector({ demo }: { demo: Demo }) {
   const computationLabel = computation === "conv" ? "After convolution · before bias" : computation === "bias" ? "After adding channel bias · before ReLU" : computation === "relu" ? "After ReLU · transform path" : "After shortcut + ReLU correction · block output";
   const viewTitle = view === "channel" ? `Channel ${channel + 1}` : view === "max" ? "Maximum across 512 channels" : view === "min" ? "Minimum across 512 channels" : "Mean across 512 channels";
 
+  if (layer === "profile") return <section className="inspector" id="tensor-inspector">
+    <SectionHeading step="6" eyebrow="SUPPORTING INSPECTION TOOL" title="Inspect the raw 512 × N tensors after learning the computation">Choose any backbone layer, or follow the profile head as it converts the complete final feature tensor into a one-dimensional accessibility profile.</SectionHeading>
+    <div className="inspector-controls profile-inspector-controls">
+      <label><span>Layer</span><select value={layer} onChange={event => chooseStage(event.target.value as LayerKey)}><option value="stem">Stem · 512 × 2,094</option>{DILATIONS.map((dilation, index) => <option key={dilation} value={`res${index + 1}`}>Residual {index + 1} · 512 × {LENGTHS[index + 2].toLocaleString()}</option>)}<option value="profile">Profile output · 512 × 1,074 → 1 × 1,000</option></select></label>
+      <div className="profile-shape-summary"><span>Selected transition</span><b>512 × 1,074 → Conv k=75 → 1 × 1,000</b></div>
+    </div>
+    <ProfileLayerView demo={demo} finalTensor={tensor} values={values} error={error} />
+  </section>;
+
   return <section className="inspector" id="tensor-inspector">
     <SectionHeading step="6" eyebrow="SUPPORTING INSPECTION TOOL" title="Inspect the raw 512 × N tensors after learning the computation">
       Begin with the complete representation, then use the shared marker to open the same coordinate at higher resolution. The computation control exposes exactly what bias, ReLU, and the residual shortcut change.
     </SectionHeading>
     <div className="inspector-controls">
-      <label><span>Layer</span><select value={layer} onChange={event => chooseStage(event.target.value as TensorKey)}><option value="stem">Stem · 512 × 2,094</option>{DILATIONS.map((dilation, index) => <option key={dilation} value={`res${index + 1}`}>Residual {index + 1} · 512 × {LENGTHS[index + 2].toLocaleString()}</option>)}</select></label>
+      <label><span>Layer</span><select value={layer} onChange={event => chooseStage(event.target.value as LayerKey)}><option value="stem">Stem · 512 × 2,094</option>{DILATIONS.map((dilation, index) => <option key={dilation} value={`res${index + 1}`}>Residual {index + 1} · 512 × {LENGTHS[index + 2].toLocaleString()}</option>)}<option value="profile">Profile output · 512 × 1,074 → 1 × 1,000</option></select></label>
       <div className="computation-control"><span>Computation state</span><div className="segmented">{(["conv", "bias", "relu", ...(layer === "stem" ? [] : ["output"])] as ComputationStage[]).map(option => <button key={option} className={computation === option ? "active" : ""} onClick={() => chooseComputation(option)}>{option === "conv" ? "Convolution" : option === "bias" ? "+ Bias" : option === "relu" ? "ReLU" : "+ Shortcut"}</button>)}</div></div>
       <div><span>Presentation</span><div className="segmented">{(["tensor", "channel", "max", "mean", "min"] as InspectorView[]).map(option => <button key={option} className={view === option ? "active" : ""} onClick={() => setView(option)}>{option === "tensor" ? "Raw heatmap" : option === "channel" ? "One channel" : option === "max" ? "Max" : option === "mean" ? "Mean" : "Min"}</button>)}</div></div>
       {view === "tensor" && <label><span>Weak-value transform</span><select value={transfer} onChange={event => setTransfer(event.target.value as Transfer)}><option value="linear">Linear · most literal</option><option value="sqrt">Square root · reveal weak</option><option value="log">Log · reveal more weak</option></select></label>}
@@ -690,11 +741,11 @@ export default function Home() {
   const [colorGain, setColorGain] = useState(1);
   const demo = PRESETS[preset];
   return <main>
-    <header className="topbar"><a href="#top" className="brand"><b>SEQ</b><span>CNN EXPLAINER</span></a><nav><a href="#architecture">Model map</a><a href="#stem">Stem</a><a href="#residual">Residual blocks</a><a href="#outputs">Outputs</a><a href="#tensor-inspector">Tensors</a><a href="/dilation-trace">Dilation evolution ↗</a></nav><label><span>Demo</span><select value={preset} onChange={event => { const nextPreset = event.target.value; const nextDemo = PRESETS[nextPreset]; setPreset(nextPreset); setWindowStart(nextDemo.filter_demos[0].peak_position_zero_based); setBlock(1); }}><option value="k562">Real K562 checkpoint</option><option value="synthetic">Same model · synthetic DNA</option></select></label></header>
+    <header className="topbar"><a href="#top" className="brand"><b>SEQ</b><span>CNN EXPLAINER</span></a><nav><a href="#architecture">Model map</a><a href="#stem">Stem</a><a href="#residual">Residual blocks</a><a href="#outputs">Outputs</a><a href="#tensor-inspector">Tensors</a><a href="/dilation-trace">Dilation evolution ↗</a></nav><label><span>Demo</span><select value={preset} onChange={event => { const nextPreset = event.target.value; const nextDemo = PRESETS[nextPreset]; setPreset(nextPreset); setWindowStart(nextDemo.filter_demos[0].peak_position_zero_based); setBlock(1); }}><option value="k562">K562 DNase checkpoint</option><option value="gm21515">GM21515 ATAC checkpoint · same DNA</option><option value="synthetic">K562 model · synthetic DNA</option></select></label></header>
     <div id="top" />
     <section className="hero">
       <div><p>ONE CALCULATION · FOLLOWED TOP TO BOTTOM</p><h1>How a DNA sequence becomes an accessibility prediction</h1><span>Start with bases. Watch a local detector slide. Then see dilated blocks combine learned features across distance and channels.</span></div>
-      <aside><small>RUNNING EXAMPLE</small><b>{demo.input.locus_label}</b><span>Published ChromBPNet no-bias model · fold 0</span><em>forward-pass activations from the extracted HDF5 checkpoint</em></aside>
+      <aside><small>RUNNING EXAMPLE</small><b>{demo.input.locus_label}</b><span>{demo.provenance.biosample} · {demo.provenance.assay} · {demo.provenance.experiment}</span><em>published no-bias fold-0 checkpoint · exact forward-pass activations</em></aside>
     </section>
     <div className="promise-strip"><b>The mental model</b><span>detect local patterns</span><i>↓</i><span>combine features over wider context</span><i>↓</i><span>predict where and how much</span></div>
 
@@ -720,7 +771,7 @@ export default function Home() {
     <FlowArrow label="optional: inspect every tensor value" />
     <TensorInspector demo={demo} />
     <section className="attribution-note"><div><small>NOT PART OF THIS FORWARD-PASS DEMO</small><h2>Input attribution requires an additional analysis</h2></div><p>DeepLIFT, SHAP, gradients, or another attribution method must generate base-level attribution scores. Activations alone show what each layer computed, not which input bases caused the final prediction.</p></section>
-    <footer><b>Sequence CNN Explainer · structural prototype</b><span>Model values: published K562 ChromBPNet checkpoint · coordinates: input-relative unless explicitly labeled</span></footer>
+    <footer><b>Sequence CNN Explainer · structural prototype</b><span>Model values: published {demo.provenance.biosample} ChromBPNet checkpoint · coordinates: input-relative unless explicitly labeled</span></footer>
     <FeedbackLayer />
   </main>;
 }
