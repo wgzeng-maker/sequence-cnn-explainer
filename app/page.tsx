@@ -9,7 +9,8 @@ type Demo = typeof k562Peak;
 type Tensor = Demo["tensors"]["stem"];
 type TensorKey = "stem" | "res1" | "res2" | "res3" | "res4" | "res5" | "res6" | "res7" | "res8";
 type Transfer = "linear" | "sqrt" | "log";
-type InspectorView = "tensor" | "channel" | "max" | "mean";
+type InspectorView = "tensor" | "channel" | "max" | "mean" | "min";
+type ComputationStage = "conv" | "bias" | "relu" | "output";
 
 const BASES = ["A", "C", "G", "T"] as const;
 const BASE_COLORS = ["#e96b54", "#4f97b2", "#e5b33f", "#72a17e"];
@@ -25,6 +26,13 @@ const inputCoordinate = (local: number, length: number) => Math.round(offsetForL
 
 function tensorFor(demo: Demo, key: TensorKey): Tensor {
   return demo.tensors[key] as Tensor;
+}
+
+function inspectorTensorFor(demo: Demo, layer: TensorKey, computation: ComputationStage): Tensor {
+  const key = computation === "output" || (layer === "stem" && computation === "relu")
+    ? layer
+    : `${layer}_${computation}`;
+  return demo.tensors[key as keyof Demo["tensors"]] as Tensor;
 }
 
 function transformValue(value: number, maximum: number, transfer: Transfer, gain: number) {
@@ -63,8 +71,25 @@ function useTensorData(tensor: Tensor | null) {
     if (!tensor) return;
     const controller = new AbortController();
     setError(null);
-    loadFloat32Tensor(tensor.full_heatmap.url, tensor.full_heatmap.height_channels * tensor.full_heatmap.width_positions, controller.signal)
-      .then(values => setLoaded({ url: tensor.full_heatmap.url, values }))
+    const heatmap = tensor.full_heatmap as typeof tensor.full_heatmap & {
+      display_transform?: "add_channel_bias" | "add_channel_bias_relu";
+      channel_bias?: number[];
+    };
+    loadFloat32Tensor(heatmap.url, heatmap.height_channels * heatmap.width_positions, controller.signal)
+      .then(source => {
+        if (!heatmap.display_transform || !heatmap.channel_bias) return source;
+        const values = new Float32Array(source.length);
+        for (let channel = 0; channel < heatmap.height_channels; channel += 1) {
+          const bias = heatmap.channel_bias[channel];
+          const offset = channel * heatmap.width_positions;
+          for (let position = 0; position < heatmap.width_positions; position += 1) {
+            const biased = source[offset + position] + bias;
+            values[offset + position] = heatmap.display_transform === "add_channel_bias_relu" ? Math.max(0, biased) : biased;
+          }
+        }
+        return values;
+      })
+      .then(values => setLoaded({ url: heatmap.url, values }))
       .catch(reason => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
         setError(reason instanceof Error ? reason.message : "The tensor data could not be loaded.");
@@ -72,6 +97,23 @@ function useTensorData(tensor: Tensor | null) {
     return () => controller.abort();
   }, [tensor]);
   return { values: loaded?.url === tensor?.full_heatmap.url ? loaded.values : null, error };
+}
+
+function useFloat32Asset(url: string, expectedValues: number) {
+  const [loaded, setLoaded] = useState<{ url: string; values: Float32Array } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setError(null);
+    loadFloat32Tensor(url, expectedValues, controller.signal)
+      .then(values => setLoaded({ url, values }))
+      .catch(reason => {
+        if (reason instanceof DOMException && reason.name === "AbortError") return;
+        setError(reason instanceof Error ? reason.message : "The data could not be loaded.");
+      });
+    return () => controller.abort();
+  }, [url, expectedValues]);
+  return { values: loaded?.url === url ? loaded.values : null, error };
 }
 
 function SectionHeading({ step, eyebrow, title, children }: { step: string; eyebrow: string; title: string; children: React.ReactNode }) {
@@ -136,9 +178,58 @@ function WeightMatrix({ weights, gain }: { weights: number[][]; gain: number }) 
   </div>;
 }
 
+function KernelBankCanvas({ values, selected, onSelect }: { values: Float32Array | null; selected: number; onSelect: (filter: number) => void }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || !values) return;
+    canvas.width = 21; canvas.height = 512;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    const image = context.createImageData(21, 512);
+    let maximum = 1e-12;
+    values.forEach(value => { maximum = Math.max(maximum, Math.abs(value)); });
+    for (let filter = 0; filter < 512; filter += 1) {
+      for (let position = 0; position < 21; position += 1) {
+        let strongest = 0;
+        for (let base = 0; base < 4; base += 1) {
+          const value = values[filter * 84 + base * 21 + position];
+          if (Math.abs(value) > Math.abs(strongest)) strongest = value;
+        }
+        const color = signedColor(strongest, maximum).match(/\d+/g)!.map(Number);
+        const target = (filter * 21 + position) * 4;
+        image.data[target] = color[0]; image.data[target + 1] = color[1]; image.data[target + 2] = color[2]; image.data[target + 3] = 255;
+      }
+    }
+    context.putImageData(image, 0, 0);
+  }, [values]);
+  const select = (event: React.MouseEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    onSelect(clamp(Math.floor((event.clientY - rect.top) / rect.height * 512), 0, 511));
+  };
+  return <div className="kernel-bank-canvas" role="button" tabIndex={0} aria-label="Select one of 512 stem filters" onClick={select}>
+    {!values && <span className="loading">loading all stem kernels…</span>}
+    <canvas ref={ref} />
+    <i style={{ top: `${selected / 512 * 100}%` }} />
+  </div>;
+}
+
 function StemStory({ demo, start, setStart, gain }: { demo: Demo; start: number; setStart: (value: number) => void; gain: number }) {
-  const [filterIndex, setFilterIndex] = useState(0);
-  const filter = demo.filter_demos[filterIndex];
+  const [filterNumber, setFilterNumber] = useState(demo.filter_demos[0].filter_zero_based);
+  const bank = demo.stem_kernel_bank;
+  const { values: kernelValues, error: kernelError } = useFloat32Asset(bank.url, bank.filter_count * bank.base_count * bank.position_count);
+  const { values: stemValues } = useTensorData(demo.tensors.stem);
+  useEffect(() => setFilterNumber(demo.filter_demos[0].filter_zero_based), [demo.input.preset_id, demo.filter_demos]);
+  const fallback = demo.filter_demos.find(item => item.filter_zero_based === filterNumber);
+  const weights = BASES.map((_, base) => Array.from({ length: 21 }, (_, position) => kernelValues?.[filterNumber * 84 + base * 21 + position] ?? fallback?.weights_base_rows_by_positions[base][position] ?? 0));
+  const filter = {
+    filter_zero_based: filterNumber,
+    filter_human_label: `Filter ${filterNumber + 1}`,
+    weights_base_rows_by_positions: weights,
+    bias: bank.biases[filterNumber],
+    maximum_activation: bank.maximum_activations[filterNumber],
+    peak_position_zero_based: bank.peak_positions_zero_based[filterNumber],
+  };
   const sequence = demo.input.sequence;
   const window = sequence.slice(start, start + 21).split("");
   const weighted = window.map((base, index) => filter.weights_base_rows_by_positions[BASES.indexOf(base as typeof BASES[number])][index]);
@@ -147,8 +238,7 @@ function StemStory({ demo, start, setStart, gain }: { demo: Demo; start: number;
   const output = Math.max(0, beforeRelu);
   const maximum = Math.max(...filter.weights_base_rows_by_positions.flat().map(Math.abs), 1e-12);
   const tensor = demo.tensors.stem;
-  const rowIndex = tensor.selected_channels_zero_based.indexOf(filter.filter_zero_based);
-  const track = rowIndex >= 0 ? tensor.selected_channel_values[rowIndex] : [];
+  const track = stemValues ? Array.from(stemValues.subarray(filterNumber * 2094, (filterNumber + 1) * 2094)) : [];
   const zoomStart = clamp(start - 20, 0, 2094 - 61);
   const zoomPositions = Array.from({ length: 61 }, (_, index) => zoomStart + index);
   const trackMax = Math.max(...track, 1e-12);
@@ -157,7 +247,17 @@ function StemStory({ demo, start, setStart, gain }: { demo: Demo; start: number;
     <SectionHeading step="2" eyebrow="LOCAL FEATURE DETECTION" title="A stem filter asks the same 21-base question everywhere">
       One learned kernel slides one base at a time. The calculation below produces exactly one cell in the <b>512 × 2,094</b> stem tensor.
     </SectionHeading>
-    <div className="choice-row" aria-label="Choose a real stem filter">{demo.filter_demos.map((item, index) => <button key={item.filter_zero_based} className={filterIndex === index ? "active" : ""} onClick={() => { setFilterIndex(index); setStart(item.peak_position_zero_based); }}><b>{item.filter_human_label}</b><small>peak {item.maximum_activation.toFixed(2)}</small></button>)}</div>
+    <div className="filter-picker" aria-label="Choose a real stem filter">
+      <div className="choice-row">{demo.filter_demos.map(item => <button key={item.filter_zero_based} className={filterNumber === item.filter_zero_based ? "active" : ""} onClick={() => { setFilterNumber(item.filter_zero_based); setStart(item.peak_position_zero_based); }}><b>{item.filter_human_label}</b><small>peak {item.maximum_activation.toFixed(2)}</small></button>)}</div>
+      <label><span>Or enter any filter</span><input type="number" min="1" max="512" value={filterNumber + 1} onChange={event => { const next = clamp(Number(event.target.value || 1) - 1, 0, 511); setFilterNumber(next); setStart(bank.peak_positions_zero_based[next]); }} /></label>
+    </div>
+    <details className="kernel-bank" data-feedback-id="All 512 stem filters heatmap">
+      <summary>Open all 512 stem filters as one 512 × 21 heatmap</summary>
+      <p>Each row is one filter. Each cell summarizes one kernel position using the strongest A/C/G/T weight there; blue is positive and coral is negative. Click a row to inspect its full 4 × 21 kernel below.</p>
+      {kernelError && <div className="tensor-error"><b>Kernel data did not load</b><span>{kernelError}</span></div>}
+      <KernelBankCanvas values={kernelValues} selected={filterNumber} onSelect={next => { setFilterNumber(next); setStart(bank.peak_positions_zero_based[next]); }} />
+      <div className="axis"><span>Filter 1</span><span>21 kernel positions across · 512 filters down</span><span>Filter 512</span></div>
+    </details>
     <div className="stem-stage">
       <div className="kernel-card" data-feedback-id="Actual 21 by 4 stem kernel">
         <div className="mini-heading"><div><small>THE LEARNED QUESTION</small><h3>{filter.filter_human_label} kernel · 4 × 21</h3></div><span>blue positive · coral negative</span></div>
@@ -223,8 +323,8 @@ function ArchitectureMap({ selectedBlock, onBlock }: { selectedBlock: number; on
   </section>;
 }
 
-function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, marker, onMarker }: {
-  tensor: Tensor; values: Float32Array | null; mode: "full" | "zoom"; start: number; width: number; transfer: Transfer; gain: number; marker?: number; onMarker?: (value: number) => void;
+function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, signed = false, marker, onMarker }: {
+  tensor: Tensor; values: Float32Array | null; mode: "full" | "zoom"; start: number; width: number; transfer: Transfer; gain: number; signed?: boolean; marker?: number; onMarker?: (value: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fullWidth = tensor.full_heatmap.width_positions;
@@ -242,14 +342,21 @@ function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, mark
     for (let channel = 0; channel < height; channel += 1) {
       for (let column = 0; column < shownWidth; column += 1) {
         const sourceColumn = safeStart + column;
-        const level = transformValue(values[channel * fullWidth + sourceColumn], tensor.max, transfer, gain);
-        const color = heatColor(level).match(/\d+/g)!.map(Number);
+        const value = values[channel * fullWidth + sourceColumn];
+        const maximum = signed ? Math.max(Math.abs(tensor.min), Math.abs(tensor.max), 1e-12) : tensor.max;
+        const level = transformValue(Math.abs(value), maximum, transfer, gain);
+        const color = signed
+          ? [247, 244, 236].map((base, index) => {
+              const target = value >= 0 ? [44, 129, 158] : [225, 91, 69];
+              return Math.round(base + (target[index] - base) * level);
+            })
+          : heatColor(level).match(/\d+/g)!.map(Number);
         const target = (channel * shownWidth + column) * 4;
         image.data[target] = color[0]; image.data[target + 1] = color[1]; image.data[target + 2] = color[2]; image.data[target + 3] = 255;
       }
     }
     context.putImageData(image, 0, 0);
-  }, [values, shownWidth, height, safeStart, fullWidth, tensor.max, transfer, gain]);
+  }, [values, shownWidth, height, safeStart, fullWidth, tensor.min, tensor.max, transfer, gain, signed]);
   const click = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!onMarker) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -264,6 +371,46 @@ function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, mark
       if (event.key === "ArrowRight") onMarker(clamp(marker + 1, safeStart, safeStart + shownWidth - 1));
     }}>{!values && <span className="loading">loading raw tensor…</span>}<canvas ref={canvasRef} />{markerLeft !== null && <i className="position-marker" style={{ left: `${markerLeft}%` }} />}</div>
     <div className="axis"><span>{safeStart + 1}</span><span>{mode === "full" ? "every location shown · float32 values" : `${shownWidth} positions × all 512 channels`}</span><span>{safeStart + shownWidth}</span></div>
+  </div>;
+}
+
+function SignalCanvas({ track, start, width, marker, signed, onMarker, label }: {
+  track: number[]; start: number; width: number; marker: number; signed: boolean; onMarker?: (value: number) => void; label: string;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const shownWidth = Math.min(width, track.length);
+  const safeStart = clamp(start, 0, Math.max(0, track.length - shownWidth));
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || track.length === 0) return;
+    canvas.width = shownWidth;
+    canvas.height = 150;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    context.fillStyle = "#f7f4ec";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const visible = track.slice(safeStart, safeStart + shownWidth);
+    const min = signed ? Math.min(...visible, 0) : 0;
+    const max = Math.max(...visible, 1e-12);
+    const range = Math.max(max - min, 1e-12);
+    const zeroY = Math.round((max / range) * (canvas.height - 1));
+    context.fillStyle = "#d1cbc0";
+    context.fillRect(0, zeroY, canvas.width, 1);
+    visible.forEach((value, index) => {
+      const valueY = Math.round(((max - value) / range) * (canvas.height - 1));
+      context.fillStyle = value < 0 ? "#e15b45" : "#3288a3";
+      context.fillRect(index, Math.min(valueY, zeroY), 1, Math.max(1, Math.abs(zeroY - valueY)));
+    });
+  }, [track, safeStart, shownWidth, signed]);
+  const markerLeft = clamp((marker - safeStart) / Math.max(1, shownWidth - 1) * 100, 0, 100);
+  const select = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!onMarker) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    onMarker(Math.round(safeStart + clamp((event.clientX - rect.left) / rect.width, 0, 1) * (shownWidth - 1)));
+  };
+  return <div className={`signal-canvas-shell ${onMarker ? "interactive" : ""}`} onClick={select} role={onMarker ? "button" : undefined} tabIndex={onMarker ? 0 : undefined} aria-label={label}>
+    <canvas ref={ref} />
+    <i className="position-marker" style={{ left: `${markerLeft}%` }} />
   </div>;
 }
 
@@ -409,55 +556,72 @@ function OutputStory({ demo }: { demo: Demo }) {
 }
 
 function TensorInspector({ demo }: { demo: Demo }) {
-  const [stage, setStage] = useState<TensorKey>("stem");
+  const [layer, setLayer] = useState<TensorKey>("stem");
+  const [computation, setComputation] = useState<ComputationStage>("relu");
   const [view, setView] = useState<InspectorView>("tensor");
   const [transfer, setTransfer] = useState<Transfer>("sqrt");
   const [gain, setGain] = useState(1.8);
-  const tensor = tensorFor(demo, stage);
+  const tensor = inspectorTensorFor(demo, layer, computation);
   const { values, error } = useTensorData(tensor);
   const length = tensor.full_heatmap.width_positions;
   const [center, setCenter] = useState(Math.floor(length / 2));
   const [channel, setChannel] = useState(tensor.selected_channels_zero_based[0]);
+  const signed = computation === "conv" || computation === "bias";
   const zoomWidth = 61;
   const zoomStart = clamp(center - Math.floor(zoomWidth / 2), 0, length - zoomWidth);
   const positions = Array.from({ length: zoomWidth }, (_, index) => zoomStart + index);
   const inputPositions = positions.map(position => Math.round(offsetForLength(length) + position));
 
   const chooseStage = (nextStage: TensorKey) => {
-    const nextTensor = tensorFor(demo, nextStage);
-    setStage(nextStage);
+    const nextComputation = nextStage === "stem" && computation === "output" ? "relu" : computation;
+    const nextTensor = inspectorTensorFor(demo, nextStage, nextComputation);
+    setLayer(nextStage);
+    setComputation(nextComputation);
     setCenter(Math.floor(nextTensor.full_heatmap.width_positions / 2));
     setChannel(nextTensor.selected_channels_zero_based[0]);
   };
 
+  const chooseComputation = (next: ComputationStage) => {
+    const nextTensor = inspectorTensorFor(demo, layer, next);
+    setComputation(next);
+    setCenter(Math.floor(nextTensor.full_heatmap.width_positions / 2));
+  };
+
   const channelValues = values ? Array.from({ length }, (_, position) => values[channel * length + position]) : [];
-  const metric = view === "max" ? tensor.position_max : tensor.position_mean;
+  const metric = view === "max" ? tensor.position_max : view === "min" ? tensor.position_min : tensor.position_mean;
   const track = view === "channel" ? channelValues : metric;
-  const trackMax = Math.max(...track, 1e-12);
+  const computationLabel = computation === "conv" ? "After convolution · before bias" : computation === "bias" ? "After adding channel bias · before ReLU" : computation === "relu" ? "After ReLU · transform path" : "After shortcut + ReLU correction · block output";
+  const viewTitle = view === "channel" ? `Channel ${channel + 1}` : view === "max" ? "Maximum across 512 channels" : view === "min" ? "Minimum across 512 channels" : "Mean across 512 channels";
 
   return <section className="inspector" id="tensor-inspector">
     <SectionHeading step="6" eyebrow="SUPPORTING INSPECTION TOOL" title="Inspect the raw 512 × N tensors after learning the computation">
-      The heatmap shows every channel and position. Display transforms can reveal weak values, but they never alter the underlying float32 activations.
+      Begin with the complete representation, then use the shared marker to open the same coordinate at higher resolution. The computation control exposes exactly what bias, ReLU, and the residual shortcut change.
     </SectionHeading>
     <div className="inspector-controls">
-      <label><span>Layer</span><select value={stage} onChange={event => chooseStage(event.target.value as TensorKey)}><option value="stem">Stem · 512 × 2,094</option>{DILATIONS.map((dilation, index) => <option key={dilation} value={`res${index + 1}`}>Residual {index + 1} · 512 × {LENGTHS[index + 2].toLocaleString()}</option>)}</select></label>
-      <div><span>Presentation</span><div className="segmented">{(["tensor", "channel", "max", "mean"] as InspectorView[]).map(option => <button key={option} className={view === option ? "active" : ""} onClick={() => setView(option)}>{option === "tensor" ? "Raw heatmap" : option === "channel" ? "One channel" : option === "max" ? "Max collapse" : "Mean collapse"}</button>)}</div></div>
+      <label><span>Layer</span><select value={layer} onChange={event => chooseStage(event.target.value as TensorKey)}><option value="stem">Stem · 512 × 2,094</option>{DILATIONS.map((dilation, index) => <option key={dilation} value={`res${index + 1}`}>Residual {index + 1} · 512 × {LENGTHS[index + 2].toLocaleString()}</option>)}</select></label>
+      <div className="computation-control"><span>Computation state</span><div className="segmented">{(["conv", "bias", "relu", ...(layer === "stem" ? [] : ["output"])] as ComputationStage[]).map(option => <button key={option} className={computation === option ? "active" : ""} onClick={() => chooseComputation(option)}>{option === "conv" ? "Convolution" : option === "bias" ? "+ Bias" : option === "relu" ? "ReLU" : "+ Shortcut"}</button>)}</div></div>
+      <div><span>Presentation</span><div className="segmented">{(["tensor", "channel", "max", "mean", "min"] as InspectorView[]).map(option => <button key={option} className={view === option ? "active" : ""} onClick={() => setView(option)}>{option === "tensor" ? "Raw heatmap" : option === "channel" ? "One channel" : option === "max" ? "Max" : option === "mean" ? "Mean" : "Min"}</button>)}</div></div>
       {view === "tensor" && <label><span>Weak-value transform</span><select value={transfer} onChange={event => setTransfer(event.target.value as Transfer)}><option value="linear">Linear · most literal</option><option value="sqrt">Square root · reveal weak</option><option value="log">Log · reveal more weak</option></select></label>}
       {view === "tensor" && <label><span>Brightness gain · {gain.toFixed(1)}×</span><input type="range" min="0.5" max="5" step="0.1" value={gain} onChange={event => setGain(Number(event.target.value))} /></label>}
-      {view === "channel" && <label><span>Channel · {channel + 1}</span><input type="range" min="0" max="511" value={channel} onChange={event => setChannel(Number(event.target.value))} /></label>}
+      {view === "channel" && <label><span>Channel number</span><input type="number" min="1" max="512" value={channel + 1} onChange={event => setChannel(clamp(Number(event.target.value || 1) - 1, 0, 511))} /></label>}
     </div>
-    <div className="truth-note"><b>{(tensor.zero_fraction * 100).toFixed(1)}% exact zeros</b><span>Blank-looking areas are part of the real sparse tensor, not missing data.</span><em>File: raw float32 · no 8-bit rounding</em></div>
+    <div className="computation-note"><b>{computationLabel}</b><span>{layer === "stem" ? "The stem has no shortcut addition." : computation === "output" ? "This is the tensor passed to the next block." : "This view isolates the residual block’s transform path before its shortcut is added."}</span></div>
+    <div className="truth-note"><b>{(tensor.zero_fraction * 100).toFixed(1)}% exact zeros</b><span>{signed ? "Coral cells are negative; blue cells are positive." : "Blank-looking areas are real zero or weak activations, not missing data."}</span><em>Published checkpoint · raw float32</em></div>
     {error && <div className="tensor-error" role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
     {view === "tensor" ? <>
-      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE TENSOR</small><h3>All 512 channels × {length.toLocaleString()} positions</h3></div><span>click to move the zoom below</span></div><TensorCanvas tensor={tensor} values={values} mode="full" start={0} width={length} transfer={transfer} gain={gain} marker={center} onMarker={setCenter} /></div>
+      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE TENSOR</small><h3>All 512 channels × {length.toLocaleString()} positions</h3></div><span>click to move the zoom below</span></div><TensorCanvas tensor={tensor} values={values} mode="full" start={0} width={length} transfer={transfer} gain={gain} signed={signed} marker={center} onMarker={setCenter} /></div>
       <FlowArrow label="the outlined position opens here" />
-      <div className="zoom-view-card"><div className="mini-heading"><div><small>ZOOM</small><h3>All 512 channels × 61 consecutive positions</h3></div><span>same tensor, larger cells</span></div><TensorCanvas tensor={tensor} values={values} mode="zoom" start={zoomStart} width={zoomWidth} transfer={transfer} gain={gain} marker={center} /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} /></div>
-    </> : <div className="collapse-card">
-      <div className="mini-heading"><div><small>{view === "channel" ? `CHANNEL ${channel + 1}` : `${view.toUpperCase()} ACROSS 512 CHANNELS`}</small><h3>{view === "channel" ? "One learned feature track" : view === "max" ? "Largest channel value at every position" : "Average channel value at every position"}</h3></div><span>{length.toLocaleString()} original positions</span></div>
-      <div className="signal-bars zoomed" style={css({ "--columns": zoomWidth })}>{positions.map(position => <i key={position} style={{ height: `${3 + (track[position] ?? 0) / trackMax * 150}px` }} />)}</div><BaseLetters sequence={demo.input.sequence} positions={inputPositions} />
+      <div className="zoom-view-card"><div className="mini-heading"><div><small>ZOOM</small><h3>All 512 channels × 61 consecutive positions</h3></div><span>same tensor, larger cells</span></div><TensorCanvas tensor={tensor} values={values} mode="zoom" start={zoomStart} width={zoomWidth} transfer={transfer} gain={gain} signed={signed} marker={center} /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} /></div>
+    </> : <>
+      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE LENGTH · {viewTitle.toUpperCase()}</small><h3>All {length.toLocaleString()} positions</h3></div><span>click to move the shared zoom</span></div><SignalCanvas track={track} start={0} width={length} marker={center} signed={signed} onMarker={setCenter} label={`Move the ${viewTitle} zoom marker`} /><div className="axis"><span>position 1</span><span>complete representation first</span><span>position {length.toLocaleString()}</span></div></div>
+      <FlowArrow label="the selected coordinate opens here" />
+      <div className="zoom-view-card">
+      <div className="mini-heading"><div><small>ZOOM · {viewTitle.toUpperCase()}</small><h3>61 consecutive positions</h3></div><span>same values, with sequence bases</span></div>
+      <SignalCanvas track={track} start={zoomStart} width={zoomWidth} marker={center} signed={signed} label={`${viewTitle} zoom`} /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} />
       <label className="range-control"><b>Move the 61-position window</b><input type="range" min="30" max={length - 31} value={center} onChange={event => setCenter(Number(event.target.value))} /><span>input {inputCoordinate(center, length)}</span></label>
-      <p className="view-definition">{view === "max" ? "Max collapse retains only the strongest of 512 values at each position." : view === "mean" ? "Mean collapse averages the same 512 channels at every position. A sum would have the identical shape, multiplied everywhere by 512." : "A channel is a learned feature dimension. High activation says this feature responded here; it does not by itself explain causality."}</p>
-    </div>}
+      <p className="view-definition">{view === "max" ? "Max retains the largest of 512 channel values at each position." : view === "min" ? "Min retains the most negative of 512 channel values; after ReLU it will be zero or positive." : view === "mean" ? "Mean averages the same 512 channels at every position. A sum has the identical shape, multiplied everywhere by 512." : "A channel is a learned feature dimension. High activation says this feature responded here; it does not by itself establish biological causality."}</p>
+      </div>
+    </>}
   </section>;
 }
 

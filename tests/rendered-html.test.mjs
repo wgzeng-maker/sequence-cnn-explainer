@@ -78,6 +78,52 @@ for (const preset of ["k562-peak", "synthetic"]) {
       assert.ok(Math.abs(calculatedLogit - demo.tensors.profile_logits.position_max[profilePosition]) < 2e-4);
     }
   });
+
+  test(`${preset} exposes exact convolution, bias, ReLU, and shortcut tensors`, async () => {
+    const demo = await loadDemo(preset);
+    const readTensor = async name => {
+      const tensor = demo.tensors[name];
+      const raw = gunzipSync(await readFile(new URL(`public${tensor.full_heatmap.url}`, root)));
+      const source = new Float32Array(new Uint8Array(raw).slice().buffer);
+      if (!tensor.full_heatmap.display_transform) return source;
+      const values = new Float32Array(source.length);
+      const width = tensor.full_heatmap.width_positions;
+      for (let channel = 0; channel < 512; channel += 1) {
+        const bias = tensor.full_heatmap.channel_bias[channel];
+        for (let position = 0; position < width; position += 1) {
+          const index = channel * width + position;
+          const biased = source[index] + bias;
+          values[index] = tensor.full_heatmap.display_transform === "add_channel_bias_relu" ? Math.max(0, biased) : biased;
+        }
+      }
+      return values;
+    };
+    for (const layer of ["stem", "res1", "res4", "res8"]) {
+      const outputLength = demo.tensors[layer].full_heatmap.width_positions;
+      const convolution = await readTensor(`${layer}_conv`);
+      const biased = await readTensor(`${layer}_bias`);
+      const relu = layer === "stem" ? await readTensor("stem") : await readTensor(`${layer}_relu`);
+      for (const index of [0, 17, Math.floor(convolution.length / 2), convolution.length - 1]) {
+        assert.ok(Math.abs(relu[index] - Math.max(0, biased[index])) < 1e-6, `${preset} ${layer} ReLU mismatch`);
+      }
+      if (layer !== "stem") {
+        const output = await readTensor(layer);
+        const block = Number(layer.slice(3));
+        const inputLayer = block === 1 ? "stem" : `res${block - 1}`;
+        const input = await readTensor(inputLayer);
+        const inputLength = demo.tensors[inputLayer].full_heatmap.width_positions;
+        const dilation = 2 ** block;
+        for (const channel of [0, 127, 511]) {
+          for (const position of [0, Math.floor(outputLength / 2), outputLength - 1]) {
+            const index = channel * outputLength + position;
+            const shortcut = input[channel * inputLength + position + dilation];
+            assert.ok(Math.abs(output[index] - (relu[index] + shortcut)) < 2e-5, `${preset} ${layer} shortcut mismatch`);
+          }
+        }
+      }
+      assert.equal(convolution.length, biased.length);
+    }
+  });
 }
 
 test("the page teaches one connected flow and avoids the discarded GC overview", async () => {
@@ -88,6 +134,10 @@ test("the page teaches one connected flow and avoids the discarded GC overview",
   assert.match(page, /profile probabilities/i);
   assert.match(page, /expected counts per base/i);
   assert.match(page, /The heads branch from the same final tensor/);
+  assert.match(page, /Open all 512 stem filters as one 512 × 21 heatmap/);
+  assert.match(page, /Computation state/);
+  assert.match(page, /complete representation first/);
+  assert.match(page, /type="number" min="1" max="512"/);
   assert.doesNotMatch(page, /GC fraction/i);
 });
 
