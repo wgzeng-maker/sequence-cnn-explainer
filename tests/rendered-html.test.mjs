@@ -62,6 +62,21 @@ for (const preset of ["k562-peak", "synthetic"]) {
     assert.ok(Math.abs(counts.reduce((sum, value) => sum + value, 0) - demo.outputs.predicted_total_count) < 1e-2);
     const dense = demo.head_demos.count_pooled_features.reduce((sum, value, index) => sum + value * demo.head_demos.count_dense_weights[index], 0);
     assert.ok(Math.abs(dense + demo.head_demos.count_dense_bias - demo.outputs.logcount) < 2e-5);
+
+    assert.equal(demo.head_demos.profile_weights_input_channels_by_positions.length, 512);
+    assert.equal(demo.head_demos.profile_weights_input_channels_by_positions[0].length, 75);
+    const finalRaw = gunzipSync(await readFile(new URL(`public/data/tensors/${demo.input.preset_id}/res8.f32.gz`, root)));
+    const finalTensor = new Float32Array(new Uint8Array(finalRaw).slice().buffer);
+    for (const profilePosition of [0, 500, 999]) {
+      let calculatedLogit = demo.head_demos.profile_bias;
+      for (let kernelPosition = 0; kernelPosition < 75; kernelPosition += 1) {
+        for (let channel = 0; channel < 512; channel += 1) {
+          calculatedLogit += finalTensor[channel * 1074 + profilePosition + kernelPosition]
+            * demo.head_demos.profile_weights_input_channels_by_positions[channel][kernelPosition];
+        }
+      }
+      assert.ok(Math.abs(calculatedLogit - demo.tensors.profile_logits.position_max[profilePosition]) < 2e-4);
+    }
   });
 }
 
@@ -74,4 +89,14 @@ test("the page teaches one connected flow and avoids the discarded GC overview",
   assert.match(page, /expected counts per base/i);
   assert.match(page, /The heads branch from the same final tensor/);
   assert.doesNotMatch(page, /GC fraction/i);
+});
+
+test("the dilation evolution demo separates geometric reach from measured contribution", async () => {
+  const page = await readFile(new URL("app/dilation-trace/page.tsx", root), "utf8");
+  assert.match(page, /possible reach through the stacked kernels/i);
+  assert.match(page, /does not claim that every reachable feature affected the prediction/i);
+  assert.match(page, /PRESERVED SHORTCUT/);
+  assert.match(page, /LEARNED CORRECTION/);
+  assert.match(page, /Each tap reads all 512 channels/);
+  assert.match(page, /38,400 activation × weight products/);
 });

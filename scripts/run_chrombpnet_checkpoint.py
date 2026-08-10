@@ -188,6 +188,7 @@ def main() -> None:
         logcount = pooled @ count_kernel
         logcount += count_bias[None, :]
         profile_kernel = weight(handle, "wo_bias_bpnet_prof_out_precrop", "kernel")
+        profile_bias = weight(handle, "wo_bias_bpnet_prof_out_precrop", "bias")
 
     shifted_profile = profile - np.max(profile, axis=1, keepdims=True)
     probabilities = np.exp(shifted_profile) / np.exp(shifted_profile).sum(axis=1, keepdims=True)
@@ -232,6 +233,8 @@ def main() -> None:
         "residual_kernel_demos": residual_kernel_demos,
         "head_demos": {
             "profile_kernel_shape_positions_input_output_channels": list(profile_kernel.shape),
+            "profile_weights_input_channels_by_positions": np.round(profile_kernel[:, :, 0].T, 7).tolist(),
+            "profile_bias": float(profile_bias[0]),
             "count_pool_input_shape_positions_channels": [1074, 512],
             "count_pooled_features": np.round(pooled[0], 6).tolist(),
             "count_dense_weights": np.round(count_kernel[:, 0], 7).tolist(),
