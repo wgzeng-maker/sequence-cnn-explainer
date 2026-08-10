@@ -67,6 +67,13 @@ function signedColor(value: number, maximum: number) {
   return `rgb(${color.join(" ")})`;
 }
 
+function signedRgb(value: number, maximum: number) {
+  const strength = Math.sqrt(clamp(Math.abs(value) / Math.max(maximum, 1e-12), 0, 1));
+  const target = value >= 0 ? [44, 129, 158] : [225, 91, 69];
+  const background = [247, 244, 236];
+  return background.map((base, index) => Math.round(base + (target[index] - base) * strength));
+}
+
 function useTensorData(tensor: Tensor | null) {
   const [loaded, setLoaded] = useState<{ url: string; values: Float32Array } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -565,6 +572,55 @@ function OutputStory({ demo }: { demo: Demo }) {
   </section>;
 }
 
+function ProfileKernelHeatmap({ weights, bias }: { weights: number[][]; bias: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [gain, setGain] = useState(1.8);
+  const [cursor, setCursor] = useState({ channel: 255, position: 37 });
+  const absolute = useMemo(() => weights.flat().map(Math.abs).sort((a, b) => a - b), [weights]);
+  const robustMaximum = absolute[Math.floor(absolute.length * .995)] || absolute.at(-1) || 1e-12;
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.width = 75; canvas.height = 512;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const image = context.createImageData(75, 512);
+    for (let channel = 0; channel < 512; channel += 1) {
+      for (let position = 0; position < 75; position += 1) {
+        const [red, green, blue] = signedRgb(weights[channel][position], robustMaximum / gain);
+        const index = (channel * 75 + position) * 4;
+        image.data[index] = red; image.data[index + 1] = green; image.data[index + 2] = blue; image.data[index + 3] = 255;
+      }
+    }
+    context.putImageData(image, 0, 0);
+  }, [weights, robustMaximum, gain]);
+  const select = (clientX: number, clientY: number, target: HTMLCanvasElement) => {
+    const rect = target.getBoundingClientRect();
+    setCursor({
+      position: clamp(Math.floor((clientX - rect.left) / rect.width * 75), 0, 74),
+      channel: clamp(Math.floor((clientY - rect.top) / rect.height * 512), 0, 511),
+    });
+  };
+  return <div className="profile-kernel-card">
+    <div className="mini-heading"><div><small>THE LEARNED PROFILE KERNEL</small><h3>75 relative positions × 512 input channels</h3></div><span>displayed as 512 channel rows × 75 position columns</span></div>
+    <p>This one signed weight matrix is reused at every output position. Blue weights push a logit upward; coral weights push it downward. A color alone is not a biological motif—the weight acts on a learned final-layer feature.</p>
+    <div className="profile-kernel-layout">
+      <div className="profile-kernel-axis"><span>channel 1</span><b>512 input channels</b><span>channel 512</span></div>
+      <div className="profile-kernel-shell">
+        <canvas ref={canvasRef} aria-label="Profile convolution kernel heatmap, 512 channels by 75 relative positions" onPointerMove={event => select(event.clientX, event.clientY, event.currentTarget)} />
+        <i style={{ left: `${cursor.position / 75 * 100}%`, top: `${cursor.channel / 512 * 100}%`, width: `${100 / 75}%`, height: `${100 / 512}%` }} />
+      </div>
+      <div className="axis"><span>relative 1</span><span>75 kernel positions</span><span>relative 75</span></div>
+    </div>
+    <div className="profile-kernel-controls">
+      <label><b>Weight contrast · {gain.toFixed(1)}×</b><input type="range" min="0.5" max="5" step="0.1" value={gain} onChange={event => setGain(Number(event.target.value))} /></label>
+      <div><span>selected weight</span><b>relative {cursor.position + 1} × channel {cursor.channel + 1}</b><strong>{weights[cursor.channel][cursor.position].toFixed(5)}</strong></div>
+      <div><span>profile bias</span><b>added once after the 38,400 products are summed</b><strong>{bias.toFixed(5)}</strong></div>
+    </div>
+    <div className="profile-kernel-equation"><span>selected 512 × 75 tensor window</span><i>⊙</i><span>shared 512 × 75 kernel</span><i>Σ</i><span>38,400 products + bias</span><i>→</i><strong>one profile logit</strong></div>
+  </div>;
+}
+
 function ProfileLayerView({ demo, finalTensor, values, error }: { demo: Demo; finalTensor: Tensor; values: Float32Array | null; error: string | null }) {
   const [profilePosition, setProfilePosition] = useState(500);
   const logits = demo.tensors.profile_logits.position_max;
@@ -584,7 +640,9 @@ function ProfileLayerView({ demo, finalTensor, values, error }: { demo: Demo; fi
       <div className="whole-length-frame" style={{ width: `${inputWidth}%` }}><TensorCanvas tensor={finalTensor} values={values} mode="full" start={0} width={1074} transfer="sqrt" gain={1.8} marker={undefined} onMarker={chooseFromTensor} selectionStart={profilePosition} selectionWidth={75} /></div>
       <label className="range-control"><b>Move the width-75 profile kernel</b><input type="range" min="0" max="999" value={profilePosition} onChange={event => setProfilePosition(Number(event.target.value))} /><span>output {profilePosition + 1} / 1,000</span></label>
     </div>
-    <FlowArrow label="Conv1D · kernel 75 × 512 × 1 · valid padding" />
+    <FlowArrow label="the same learned kernel is placed over this 75-position window" />
+    <ProfileKernelHeatmap weights={demo.head_demos.profile_weights_input_channels_by_positions} bias={demo.head_demos.profile_bias} />
+    <FlowArrow label="element-wise multiply → sum 38,400 products → add bias → slide one position" />
     <div className="profile-stage-stack" style={{ width: `${outputWidth}%` }}>
       <article><div className="mini-heading"><div><small>AFTER CONVOLUTION</small><h3>1 × 1,000 raw profile logits</h3></div><span>one score per valid kernel position</span></div><SignalCanvas track={logits} start={0} width={1000} marker={profilePosition} signed onMarker={setProfilePosition} label="Select a raw profile logit" /></article>
       <FlowArrow label="softmax across all 1,000 logits" />

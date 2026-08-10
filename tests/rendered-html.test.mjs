@@ -141,6 +141,9 @@ test("the page teaches one connected flow and avoids the discarded GC overview",
   assert.match(page, /whole-length-frame/);
   assert.match(page, /Profile output · 512 × 1,074 → 1 × 1,000/);
   assert.match(page, /1,074 − 75 \+ 1 = 1,000/);
+  assert.match(page, /THE LEARNED PROFILE KERNEL/);
+  assert.match(page, /38,400 products \+ bias/);
+  assert.match(page, /Profile convolution kernel heatmap, 512 channels by 75 relative positions/);
   assert.match(page, /GM21515 ATAC checkpoint/);
   assert.match(page, /nextStage === "stem" \? \(computation === "output" \? "relu" : computation\) : layer === "stem" \? "output"/);
   assert.match(page, /type="number" min="1" max="512"/);
