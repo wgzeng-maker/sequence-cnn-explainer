@@ -137,6 +137,9 @@ test("the page teaches one connected flow and avoids the discarded GC overview",
   assert.match(page, /Open all 512 stem filters as one 512 × 21 heatmap/);
   assert.match(page, /Computation state/);
   assert.match(page, /complete representation first/);
+  assert.match(page, /Extrema color strength/);
+  assert.match(page, /whole-length-frame/);
+  assert.match(page, /nextStage === "stem" \? \(computation === "output" \? "relu" : computation\) : layer === "stem" \? "output"/);
   assert.match(page, /type="number" min="1" max="512"/);
   assert.doesNotMatch(page, /GC fraction/i);
 });

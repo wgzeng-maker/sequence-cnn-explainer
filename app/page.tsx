@@ -18,6 +18,7 @@ const PRESETS: Record<string, Demo> = { k562: k562Peak, synthetic };
 const DILATIONS = [2, 4, 8, 16, 32, 64, 128, 256];
 const LENGTHS = [2114, 2094, 2090, 2082, 2066, 2034, 1970, 1842, 1586, 1074];
 const RECEPTIVE_FIELDS = [21, 25, 33, 49, 81, 145, 273, 529, 1041];
+const MAX_TENSOR_LENGTH = 2094;
 
 const css = (values: Record<string, string | number>) => values as CSSProperties;
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -374,8 +375,8 @@ function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, sign
   </div>;
 }
 
-function SignalCanvas({ track, start, width, marker, signed, onMarker, label }: {
-  track: number[]; start: number; width: number; marker: number; signed: boolean; onMarker?: (value: number) => void; label: string;
+function SignalCanvas({ track, start, width, marker, signed, onMarker, label, colorGain = 1 }: {
+  track: number[]; start: number; width: number; marker: number; signed: boolean; onMarker?: (value: number) => void; label: string; colorGain?: number;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const shownWidth = Math.min(width, track.length);
@@ -392,16 +393,21 @@ function SignalCanvas({ track, start, width, marker, signed, onMarker, label }: 
     const visible = track.slice(safeStart, safeStart + shownWidth);
     const min = signed ? Math.min(...visible, 0) : 0;
     const max = Math.max(...visible, 1e-12);
+    const absoluteMax = Math.max(...visible.map(Math.abs), 1e-12);
     const range = Math.max(max - min, 1e-12);
     const zeroY = Math.round((max / range) * (canvas.height - 1));
     context.fillStyle = "#d1cbc0";
     context.fillRect(0, zeroY, canvas.width, 1);
     visible.forEach((value, index) => {
       const valueY = Math.round(((max - value) / range) * (canvas.height - 1));
-      context.fillStyle = value < 0 ? "#e15b45" : "#3288a3";
+      const strength = clamp(Math.sqrt(Math.abs(value) / absoluteMax) * colorGain, 0, 1);
+      const background = [247, 244, 236];
+      const target = value < 0 ? [225, 91, 69] : [44, 129, 158];
+      const color = background.map((base, channel) => Math.round(base + (target[channel] - base) * strength));
+      context.fillStyle = `rgb(${color.join(" ")})`;
       context.fillRect(index, Math.min(valueY, zeroY), 1, Math.max(1, Math.abs(zeroY - valueY)));
     });
-  }, [track, safeStart, shownWidth, signed]);
+  }, [track, safeStart, shownWidth, signed, colorGain]);
   const markerLeft = clamp((marker - safeStart) / Math.max(1, shownWidth - 1) * 100, 0, 100);
   const select = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!onMarker) return;
@@ -561,6 +567,7 @@ function TensorInspector({ demo }: { demo: Demo }) {
   const [view, setView] = useState<InspectorView>("tensor");
   const [transfer, setTransfer] = useState<Transfer>("sqrt");
   const [gain, setGain] = useState(1.8);
+  const [extremaGain, setExtremaGain] = useState(1.8);
   const tensor = inspectorTensorFor(demo, layer, computation);
   const { values, error } = useTensorData(tensor);
   const length = tensor.full_heatmap.width_positions;
@@ -571,9 +578,11 @@ function TensorInspector({ demo }: { demo: Demo }) {
   const zoomStart = clamp(center - Math.floor(zoomWidth / 2), 0, length - zoomWidth);
   const positions = Array.from({ length: zoomWidth }, (_, index) => zoomStart + index);
   const inputPositions = positions.map(position => Math.round(offsetForLength(length) + position));
+  const wholeWidthPercent = length / MAX_TENSOR_LENGTH * 100;
+  const croppedPerSide = (MAX_TENSOR_LENGTH - length) / 2;
 
   const chooseStage = (nextStage: TensorKey) => {
-    const nextComputation = nextStage === "stem" && computation === "output" ? "relu" : computation;
+    const nextComputation = nextStage === "stem" ? (computation === "output" ? "relu" : computation) : layer === "stem" ? "output" : computation;
     const nextTensor = inspectorTensorFor(demo, nextStage, nextComputation);
     setLayer(nextStage);
     setComputation(nextComputation);
@@ -603,21 +612,22 @@ function TensorInspector({ demo }: { demo: Demo }) {
       <div><span>Presentation</span><div className="segmented">{(["tensor", "channel", "max", "mean", "min"] as InspectorView[]).map(option => <button key={option} className={view === option ? "active" : ""} onClick={() => setView(option)}>{option === "tensor" ? "Raw heatmap" : option === "channel" ? "One channel" : option === "max" ? "Max" : option === "mean" ? "Mean" : "Min"}</button>)}</div></div>
       {view === "tensor" && <label><span>Weak-value transform</span><select value={transfer} onChange={event => setTransfer(event.target.value as Transfer)}><option value="linear">Linear · most literal</option><option value="sqrt">Square root · reveal weak</option><option value="log">Log · reveal more weak</option></select></label>}
       {view === "tensor" && <label><span>Brightness gain · {gain.toFixed(1)}×</span><input type="range" min="0.5" max="5" step="0.1" value={gain} onChange={event => setGain(Number(event.target.value))} /></label>}
+      {(view === "max" || view === "min") && <label><span>Extrema color strength · {extremaGain.toFixed(1)}×</span><input type="range" min="0.2" max="5" step="0.1" value={extremaGain} onChange={event => setExtremaGain(Number(event.target.value))} /></label>}
       {view === "channel" && <label><span>Channel number</span><input type="number" min="1" max="512" value={channel + 1} onChange={event => setChannel(clamp(Number(event.target.value || 1) - 1, 0, 511))} /></label>}
     </div>
     <div className="computation-note"><b>{computationLabel}</b><span>{layer === "stem" ? "The stem has no shortcut addition." : computation === "output" ? "This is the tensor passed to the next block." : "This view isolates the residual block’s transform path before its shortcut is added."}</span></div>
     <div className="truth-note"><b>{(tensor.zero_fraction * 100).toFixed(1)}% exact zeros</b><span>{signed ? "Coral cells are negative; blue cells are positive." : "Blank-looking areas are real zero or weak activations, not missing data."}</span><em>Published checkpoint · raw float32</em></div>
     {error && <div className="tensor-error" role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
     {view === "tensor" ? <>
-      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE TENSOR</small><h3>All 512 channels × {length.toLocaleString()} positions</h3></div><span>click to move the zoom below</span></div><TensorCanvas tensor={tensor} values={values} mode="full" start={0} width={length} transfer={transfer} gain={gain} signed={signed} marker={center} onMarker={setCenter} /></div>
+      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE TENSOR</small><h3>All 512 channels × {length.toLocaleString()} positions</h3></div><span>{croppedPerSide ? `${croppedPerSide.toLocaleString()} positions cropped from each side · ` : "full stem width · "}click to move the zoom</span></div><div className="whole-length-frame" style={{ width: `${wholeWidthPercent}%` }}><TensorCanvas tensor={tensor} values={values} mode="full" start={0} width={length} transfer={transfer} gain={gain} signed={signed} marker={center} onMarker={setCenter} /></div></div>
       <FlowArrow label="the outlined position opens here" />
       <div className="zoom-view-card"><div className="mini-heading"><div><small>ZOOM</small><h3>All 512 channels × 61 consecutive positions</h3></div><span>same tensor, larger cells</span></div><TensorCanvas tensor={tensor} values={values} mode="zoom" start={zoomStart} width={zoomWidth} transfer={transfer} gain={gain} signed={signed} marker={center} /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} /></div>
     </> : <>
-      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE LENGTH · {viewTitle.toUpperCase()}</small><h3>All {length.toLocaleString()} positions</h3></div><span>click to move the shared zoom</span></div><SignalCanvas track={track} start={0} width={length} marker={center} signed={signed} onMarker={setCenter} label={`Move the ${viewTitle} zoom marker`} /><div className="axis"><span>position 1</span><span>complete representation first</span><span>position {length.toLocaleString()}</span></div></div>
+      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE LENGTH · {viewTitle.toUpperCase()}</small><h3>All {length.toLocaleString()} positions</h3></div><span>{wholeWidthPercent.toFixed(1)}% of stem width · centered crop</span></div><div className="whole-length-frame" style={{ width: `${wholeWidthPercent}%` }}><SignalCanvas track={track} start={0} width={length} marker={center} signed={signed} colorGain={view === "max" || view === "min" ? extremaGain : 1} onMarker={setCenter} label={`Move the ${viewTitle} zoom marker`} /><div className="axis"><span>position 1</span><span>complete representation first</span><span>position {length.toLocaleString()}</span></div></div></div>
       <FlowArrow label="the selected coordinate opens here" />
       <div className="zoom-view-card">
       <div className="mini-heading"><div><small>ZOOM · {viewTitle.toUpperCase()}</small><h3>61 consecutive positions</h3></div><span>same values, with sequence bases</span></div>
-      <SignalCanvas track={track} start={zoomStart} width={zoomWidth} marker={center} signed={signed} label={`${viewTitle} zoom`} /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} />
+      <SignalCanvas track={track} start={zoomStart} width={zoomWidth} marker={center} signed={signed} colorGain={view === "max" || view === "min" ? extremaGain : 1} label={`${viewTitle} zoom`} /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} />
       <label className="range-control"><b>Move the 61-position window</b><input type="range" min="30" max={length - 31} value={center} onChange={event => setCenter(Number(event.target.value))} /><span>input {inputCoordinate(center, length)}</span></label>
       <p className="view-definition">{view === "max" ? "Max retains the largest of 512 channel values at each position." : view === "min" ? "Min retains the most negative of 512 channel values; after ReLU it will be zero or positive." : view === "mean" ? "Mean averages the same 512 channels at every position. A sum has the identical shape, multiplied everywhere by 512." : "A channel is a learned feature dimension. High activation says this feature responded here; it does not by itself establish biological causality."}</p>
       </div>
