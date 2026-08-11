@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import demo from "../data/k562-peak-activations.json";
+import auditArtifact from "../data/model-audit-summary.json";
 import { loadFloat32Tensor } from "../tensor-loader";
+import { CHANNEL_ORDER_LABELS, type ChannelOrder } from "../model-analysis";
 import styles from "./page.module.css";
 
 type TensorKey = "stem" | "res1" | "res2" | "res3" | "res4" | "res5" | "res6" | "res7" | "res8";
@@ -15,6 +17,8 @@ const LENGTHS = [2094, 2090, 2082, 2066, 2034, 1970, 1842, 1586, 1074];
 const RECEPTIVE_FIELDS = [21, 25, 33, 49, 81, 145, 273, 529, 1041];
 const KEYS: TensorKey[] = ["stem", "res1", "res2", "res3", "res4", "res5", "res6", "res7", "res8"];
 const LABELS = ["Stem", "Block 1", "Block 2", "Block 3", "Block 4", "Block 5", "Block 6", "Block 7", "Block 8"];
+const CHANNEL_ORDERS = (auditArtifact as unknown as { checkpoints: Record<string, { channel_orders: Record<ChannelOrder, number[]> }> }).checkpoints["k562-peak"].channel_orders;
+const CHANNEL_ORDER_KEYS = Object.keys(CHANNEL_ORDER_LABELS) as ChannelOrder[];
 const BASE_COLORS: Record<string, string> = { A: "#e96b54", C: "#4f97b2", G: "#e5b33f", T: "#72a17e" };
 const css = (values: Record<string, string | number>) => values as CSSProperties;
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -109,8 +113,8 @@ function StageFilmstrip({ raw, channels, globalCenter, stage, setStage, sharedSc
   </div>;
 }
 
-function FullTensorMagnifier({ tensorKey, raw, globalCenter, setGlobalCenter, channelStart, setChannelStart }: {
-  tensorKey: TensorKey; raw?: Float32Array; globalCenter: number; setGlobalCenter: (value: number) => void; channelStart: number; setChannelStart: (value: number) => void;
+function FullTensorMagnifier({ tensorKey, raw, globalCenter, setGlobalCenter, channelStart, setChannelStart, channelOrder }: {
+  tensorKey: TensorKey; raw?: Float32Array; globalCenter: number; setGlobalCenter: (value: number) => void; channelStart: number; setChannelStart: (value: number) => void; channelOrder: number[];
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const length = LENGTHS[KEYS.indexOf(tensorKey)];
@@ -125,13 +129,14 @@ function FullTensorMagnifier({ tensorKey, raw, globalCenter, setGlobalCenter, ch
     const image = context.createImageData(length, 512);
     let maximum = 1e-12;
     raw.forEach(value => { maximum = Math.max(maximum, Math.abs(value)); });
-    for (let channel = 0; channel < 512; channel += 1) for (let position = 0; position < length; position += 1) {
+    for (let displayRow = 0; displayRow < 512; displayRow += 1) for (let position = 0; position < length; position += 1) {
+      const channel = channelOrder[displayRow];
       const rgb = color(raw[channel * length + position], maximum);
-      const target = (channel * length + position) * 4;
+      const target = (displayRow * length + position) * 4;
       image.data[target] = rgb[0]; image.data[target + 1] = rgb[1]; image.data[target + 2] = rgb[2]; image.data[target + 3] = 255;
     }
     context.putImageData(image, 0, 0);
-  }, [raw, length]);
+  }, [raw, length, channelOrder]);
   const move = (clientX: number, clientY: number, element: HTMLDivElement) => {
     const rect = element.getBoundingClientRect();
     const local = Math.round(clamp((clientX - rect.left) / rect.width, 0, 1) * (length - 1));
@@ -150,7 +155,7 @@ function FullTensorMagnifier({ tensorKey, raw, globalCenter, setGlobalCenter, ch
       {!raw && <span>loading full tensor…</span>}<canvas ref={ref} />
       <i className={styles.magnifierSelection} style={{ left: `${localStart / length * 100}%`, width: `${61 / length * 100}%`, top: `${channelStart / 512 * 100}%`, height: `${12 / 512 * 100}%` }}><b /></i>
     </div>
-    <div className={styles.magnifierReadout}><span>channels {channelStart + 1}–{channelStart + 12}</span><span>input-aligned positions {globalCenter - 30}–{globalCenter + 30}</span><span>drag, hover, touch, or use arrow keys</span></div>
+    <div className={styles.magnifierReadout}><span>display ranks {channelStart + 1}–{channelStart + 12}</span><span>immutable IDs: {channelOrder.slice(channelStart, channelStart + 12).map(channel => channel + 1).join(", ")}</span><span>input-aligned positions {globalCenter - 30}–{globalCenter + 30}</span></div>
   </div>;
 }
 
@@ -296,9 +301,11 @@ export default function DilationTracePage() {
   const [stage, setStage] = useState(1);
   const [globalCenter, setGlobalCenter] = useState(1058);
   const [channelStart, setChannelStart] = useState(clamp(demo.tensors.stem.selected_channels_zero_based[0] - 6, 0, 500));
+  const [channelOrderName, setChannelOrderName] = useState<ChannelOrder>("original");
   const [playing, setPlaying] = useState(false);
   const [sharedScale, setSharedScale] = useState(false);
-  const channels = Array.from({ length: 12 }, (_, index) => channelStart + index);
+  const channelOrder = CHANNEL_ORDERS[channelOrderName];
+  const channels = channelOrder.slice(channelStart, channelStart + 12);
 
   useEffect(() => {
     if (!playing) return;
@@ -323,16 +330,16 @@ export default function DilationTracePage() {
       <span>Keep one input coordinate fixed. Step through the stem and eight dilated residual blocks to see which feature cells are preserved, which corrections are added, and how the final tensor feeds the accessibility profile.</span>
     </section>
     <section className={styles.controls}>
-      <div><button onClick={() => { setStage(0); setPlaying(true); }} className={styles.playButton}>{playing ? "Playing…" : "▶ Play all stages"}</button><button onClick={() => setSharedScale(value => !value)}>Color scale: {sharedScale ? "shared across stages" : "normalized per stage"}</button></div>
+      <div><button onClick={() => { setStage(0); setPlaying(true); }} className={styles.playButton}>{playing ? "Playing…" : "▶ Play all stages"}</button><button onClick={() => setSharedScale(value => !value)}>Color scale: {sharedScale ? "shared across stages" : "normalized per stage"}</button><label><b>Global channel order</b><select value={channelOrderName} onChange={event => { setChannelOrderName(event.target.value as ChannelOrder); setChannelStart(0); }}>{CHANNEL_ORDER_KEYS.map(key => <option value={key} key={key}>{CHANNEL_ORDER_LABELS[key]}</option>)}</select></label></div>
       <label><b>Tracked input coordinate</b><input type="range" min="558" max="1557" value={globalCenter} onChange={event => setGlobalCenter(Number(event.target.value))} /><span>{globalCenter}</span></label>
       <div className={styles.stageButtons}>{LABELS.map((label, index) => <button key={label} aria-pressed={stage === index} className={stage === index ? styles.active : ""} onClick={() => { setPlaying(false); setStage(index); }}><b>{label}</b><span>RF {RECEPTIVE_FIELDS[index]} bp</span></button>)}</div>
     </section>
     {error && <div className={styles.tensorError} role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
 
     <section className={styles.section}>
-      <div className={styles.sectionHeading}><span>1</span><div><small>WHOLE TENSOR → MAGNIFIED FILMSTRIP</small><h2>Select one tensor region, then compare that exact region through every stage</h2><p>The large heatmap establishes where the excerpt comes from. The magnifier chooses 12 contiguous channels and 61 input-aligned positions; every small panel below uses that same selection.</p></div></div>
-      <FullTensorMagnifier tensorKey={KEYS[stage]} raw={raw[KEYS[stage]]} globalCenter={globalCenter} setGlobalCenter={setGlobalCenter} channelStart={channelStart} setChannelStart={setChannelStart} />
-      <div className={styles.magnifiedLabel}><b>MAGNIFIED COMPARISON</b><span>channels {channelStart + 1}–{channelStart + 12} · input {globalCenter - 30}–{globalCenter + 30}</span></div>
+      <div className={styles.sectionHeading}><span>1</span><div><small>WHOLE TENSOR → MAGNIFIED FILMSTRIP</small><h2>Select one tensor region, then compare that exact region through every stage</h2><p>The large heatmap establishes where the excerpt comes from. The magnifier chooses 12 display-adjacent, permanently identified channels and 61 input-aligned positions; every small panel below uses that same selection.</p></div></div>
+      <FullTensorMagnifier tensorKey={KEYS[stage]} raw={raw[KEYS[stage]]} globalCenter={globalCenter} setGlobalCenter={setGlobalCenter} channelStart={channelStart} setChannelStart={setChannelStart} channelOrder={channelOrder} />
+      <div className={styles.magnifiedLabel}><b>MAGNIFIED COMPARISON</b><span>ranks {channelStart + 1}–{channelStart + 12} · IDs {channels.map(channel => channel + 1).join(", ")} · input {globalCenter - 30}–{globalCenter + 30}</span></div>
       <StageFilmstrip raw={raw} channels={channels} globalCenter={globalCenter} stage={stage} setStage={setStage} sharedScale={sharedScale} />
     </section>
 

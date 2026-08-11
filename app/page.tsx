@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import k562Peak from "./data/k562-peak-activations.json";
 import gm21515 from "./data/gm21515-activations.json";
 import synthetic from "./data/synthetic-activations.json";
+import auditArtifact from "./data/model-audit-summary.json";
 import { loadFloat32Tensor } from "./tensor-loader";
+import { CHANNEL_ORDER_LABELS, centeredStemWeights, displayRank, informationContent, reverseComplementBaseRows, reverseComplementSequence, type ActivationMotif, type ChannelOrder, type KernelOrientation, type KernelViewMode } from "./model-analysis";
 
 type Demo = typeof k562Peak;
 type Tensor = Demo["tensors"]["stem"];
@@ -17,6 +19,8 @@ type ComputationStage = "conv" | "bias" | "relu" | "output";
 const BASES = ["A", "C", "G", "T"] as const;
 const BASE_COLORS = ["#e96b54", "#4f97b2", "#e5b33f", "#72a17e"];
 const PRESETS: Record<string, Demo> = { k562: k562Peak, gm21515, synthetic };
+const AUDIT_CHECKPOINTS = (auditArtifact as unknown as { checkpoints: Record<string, { channel_orders: Record<ChannelOrder, number[]>; activation_motifs: { status: string; reason: string; target_site_count_per_filter: number; planned_corpus: string; selection_rule: string; motifs: ActivationMotif[] } }> }).checkpoints;
+const CHANNEL_ORDER_KEYS = Object.keys(CHANNEL_ORDER_LABELS) as ChannelOrder[];
 const DILATIONS = [2, 4, 8, 16, 32, 64, 128, 256];
 const LENGTHS = [2114, 2094, 2090, 2082, 2066, 2034, 1970, 1842, 1586, 1074];
 const RECEPTIVE_FIELDS = [21, 25, 33, 49, 81, 145, 273, 529, 1041];
@@ -188,7 +192,43 @@ function WeightMatrix({ weights, gain }: { weights: number[][]; gain: number }) 
   </div>;
 }
 
-function KernelBankCanvas({ values, selected, onSelect }: { values: Float32Array | null; selected: number; onSelect: (filter: number) => void }) {
+function SignedWeightLogo({ weights, gain }: { weights: number[][]; gain: number }) {
+  const maximum = Math.max(...weights.flat().map(Math.abs), 1e-12);
+  return <div className="signed-logo" aria-label="Signed centered stem-filter weight logo">
+    {Array.from({ length: 21 }, (_, position) => {
+      const positive = BASES.map((base, row) => ({ base, row, value: Math.max(0, weights[row][position]) })).filter(item => item.value > 0).sort((a, b) => a.value - b.value);
+      const negative = BASES.map((base, row) => ({ base, row, value: Math.min(0, weights[row][position]) })).filter(item => item.value < 0).sort((a, b) => Math.abs(a.value) - Math.abs(b.value));
+      return <div className="logo-column" key={position} title={`kernel position ${position + 1}`}>
+        <span className="logo-positive">{positive.map(item => <i key={item.base} style={{ color: BASE_COLORS[item.row], height: `${Math.max(6, Math.abs(item.value) / maximum * 78 * gain)}px`, fontSize: `${Math.max(8, Math.abs(item.value) / maximum * 68 * gain)}px` }}>{item.base}</i>)}</span>
+        <b>{position + 1}</b>
+        <span className="logo-negative">{negative.map(item => <i key={item.base} style={{ color: BASE_COLORS[item.row], height: `${Math.max(6, Math.abs(item.value) / maximum * 78 * gain)}px`, fontSize: `${Math.max(8, Math.abs(item.value) / maximum * 68 * gain)}px` }}>{item.base}</i>)}</span>
+      </div>;
+    })}
+  </div>;
+}
+
+function ActivationLogo({ motif, orientation }: { motif: ActivationMotif; orientation: KernelOrientation }) {
+  const original = motif.pfm_positions_by_bases;
+  const pfm = orientation === "model" ? original : [...original].reverse().map(column => [column[3], column[2], column[1], column[0]]);
+  const information = informationContent(pfm, motif.background_frequencies);
+  return <div>
+    <div className="activation-logo" aria-label={`Activation motif for Channel ${motif.filter_id_zero_based + 1}`}>
+      {pfm.map((column, position) => <div key={position}>{BASES.map((base, row) => ({ base, row, height: column[row] * information[position] })).sort((a, b) => a.height - b.height).map(item => <i key={item.base} style={{ color: BASE_COLORS[item.row], height: `${Math.max(2, item.height / 2 * 145)}px`, fontSize: `${Math.max(7, item.height / 2 * 120)}px` }}>{item.base}</i>)}<b>{position + 1}</b></div>)}
+    </div>
+    <p className="logo-explanation"><b>{motif.site_count} aligned 21-mers</b> · {motif.corpus_id} · {motif.activation_selection_rule}. Letter height is frequency × information content (0–2 bits).</p>
+  </div>;
+}
+
+function ActivationMotifState({ status }: { status: { status: string; reason: string; target_site_count_per_filter: number; planned_corpus: string; selection_rule: string } }) {
+  return <div className="activation-motif-state">
+    <b>Corpus-derived activation motif not generated yet</b>
+    <p>{status.reason}</p>
+    <dl><dt>planned corpus</dt><dd>{status.planned_corpus}</dd><dt>site reservoir</dt><dd>up to {status.target_site_count_per_filter} non-overlapping 21-mers per filter</dd><dt>selection rule</dt><dd>{status.selection_rule}</dd></dl>
+    <a href="/model-audit">Open the audit workspace and evidence plan →</a>
+  </div>;
+}
+
+function KernelBankCanvas({ values, selected, onSelect, channelOrder }: { values: Float32Array | null; selected: number; onSelect: (filter: number) => void; channelOrder: number[] }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = ref.current;
@@ -199,7 +239,8 @@ function KernelBankCanvas({ values, selected, onSelect }: { values: Float32Array
     const image = context.createImageData(21, 512);
     let maximum = 1e-12;
     values.forEach(value => { maximum = Math.max(maximum, Math.abs(value)); });
-    for (let filter = 0; filter < 512; filter += 1) {
+    for (let displayRow = 0; displayRow < 512; displayRow += 1) {
+      const filter = channelOrder[displayRow];
       for (let position = 0; position < 21; position += 1) {
         let strongest = 0;
         for (let base = 0; base < 4; base += 1) {
@@ -207,25 +248,28 @@ function KernelBankCanvas({ values, selected, onSelect }: { values: Float32Array
           if (Math.abs(value) > Math.abs(strongest)) strongest = value;
         }
         const color = signedColor(strongest, maximum).match(/\d+/g)!.map(Number);
-        const target = (filter * 21 + position) * 4;
+        const target = (displayRow * 21 + position) * 4;
         image.data[target] = color[0]; image.data[target + 1] = color[1]; image.data[target + 2] = color[2]; image.data[target + 3] = 255;
       }
     }
     context.putImageData(image, 0, 0);
-  }, [values]);
+  }, [values, channelOrder]);
   const select = (event: React.MouseEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    onSelect(clamp(Math.floor((event.clientY - rect.top) / rect.height * 512), 0, 511));
+    const displayRow = clamp(Math.floor((event.clientY - rect.top) / rect.height * 512), 0, 511);
+    onSelect(channelOrder[displayRow]);
   };
   return <div className="kernel-bank-canvas" role="button" tabIndex={0} aria-label="Select one of 512 stem filters" onClick={select}>
     {!values && <span className="loading">loading all stem kernels…</span>}
     <canvas ref={ref} />
-    <i style={{ top: `${selected / 512 * 100}%` }} />
+    <i style={{ top: `${Math.max(0, channelOrder.indexOf(selected)) / 512 * 100}%` }} />
   </div>;
 }
 
-function StemStory({ demo, start, setStart, gain }: { demo: Demo; start: number; setStart: (value: number) => void; gain: number }) {
+function StemStory({ demo, start, setStart, gain, channelOrder, orderName, motifStatus }: { demo: Demo; start: number; setStart: (value: number) => void; gain: number; channelOrder: number[]; orderName: ChannelOrder; motifStatus: { status: string; reason: string; target_site_count_per_filter: number; planned_corpus: string; selection_rule: string; motifs: ActivationMotif[] } }) {
   const [filterNumber, setFilterNumber] = useState(demo.filter_demos[0].filter_zero_based);
+  const [kernelView, setKernelView] = useState<KernelViewMode>("heatmap");
+  const [orientation, setOrientation] = useState<KernelOrientation>("model");
   const bank = demo.stem_kernel_bank;
   const { values: kernelValues, error: kernelError } = useFloat32Asset(bank.url, bank.filter_count * bank.base_count * bank.position_count);
   const { values: stemValues } = useTensorData(demo.tensors.stem);
@@ -241,12 +285,17 @@ function StemStory({ demo, start, setStart, gain }: { demo: Demo; start: number;
     peak_position_zero_based: bank.peak_positions_zero_based[filterNumber],
   };
   const sequence = demo.input.sequence;
-  const window = sequence.slice(start, start + 21).split("");
-  const weighted = window.map((base, index) => filter.weights_base_rows_by_positions[BASES.indexOf(base as typeof BASES[number])][index]);
+  const modelWindow = sequence.slice(start, start + 21);
+  const orientedWeights = orientation === "model" ? filter.weights_base_rows_by_positions : reverseComplementBaseRows(filter.weights_base_rows_by_positions);
+  const orientedWindow = orientation === "model" ? modelWindow : reverseComplementSequence(modelWindow);
+  const window = orientedWindow.split("");
+  const weighted = window.map((base, index) => orientedWeights[BASES.indexOf(base as typeof BASES[number])][index]);
   const dotProduct = weighted.reduce((sum, value) => sum + value, 0);
   const beforeRelu = dotProduct + filter.bias;
   const output = Math.max(0, beforeRelu);
-  const maximum = Math.max(...filter.weights_base_rows_by_positions.flat().map(Math.abs), 1e-12);
+  const maximum = Math.max(...orientedWeights.flat().map(Math.abs), 1e-12);
+  const centered = centeredStemWeights(orientedWeights, filter.bias);
+  const activationMotif = motifStatus.motifs?.find(motif => motif.filter_id_zero_based === filterNumber);
   const tensor = demo.tensors.stem;
   const track = stemValues ? Array.from(stemValues.subarray(filterNumber * 2094, (filterNumber + 1) * 2094)) : [];
   const zoomStart = clamp(start - 20, 0, 2094 - 61);
@@ -265,13 +314,20 @@ function StemStory({ demo, start, setStart, gain }: { demo: Demo; start: number;
       <summary>Open all 512 stem filters as one 512 × 21 heatmap</summary>
       <p>Each row is one filter. Each cell summarizes one kernel position using the strongest A/C/G/T weight there; blue is positive and coral is negative. Click a row to inspect its full 4 × 21 kernel below.</p>
       {kernelError && <div className="tensor-error"><b>Kernel data did not load</b><span>{kernelError}</span></div>}
-      <KernelBankCanvas values={kernelValues} selected={filterNumber} onSelect={next => { setFilterNumber(next); setStart(bank.peak_positions_zero_based[next]); }} />
-      <div className="axis"><span>Filter 1</span><span>21 kernel positions across · 512 filters down</span><span>Filter 512</span></div>
+      <KernelBankCanvas values={kernelValues} selected={filterNumber} channelOrder={channelOrder} onSelect={next => { setFilterNumber(next); setStart(bank.peak_positions_zero_based[next]); }} />
+      <div className="axis"><span>rank 1 · Channel {channelOrder[0] + 1}</span><span>{CHANNEL_ORDER_LABELS[orderName]} · immutable IDs retained</span><span>rank 512 · Channel {channelOrder[511] + 1}</span></div>
     </details>
+    <div className="kernel-view-controls">
+      <div><span>Kernel presentation</span><div className="segmented">{(["heatmap", "signed_logo", "activation_logo"] as KernelViewMode[]).map(mode => <button key={mode} className={kernelView === mode ? "active" : ""} onClick={() => setKernelView(mode)}>{mode === "heatmap" ? "Heatmap" : mode === "signed_logo" ? "Weight logo" : "Activation motif"}</button>)}</div></div>
+      <div><span>Orientation</span><div className="segmented"><button className={orientation === "model" ? "active" : ""} onClick={() => setOrientation("model")}>Model orientation</button><button className={orientation === "reverse_complement" ? "active" : ""} onClick={() => setOrientation("reverse_complement")}>Reverse complement</button></div></div>
+      <p><b>Immutable identity:</b> display rank {displayRank(channelOrder, filterNumber)} · Channel {filterNumber + 1} · {demo.provenance.experiment} fold 0</p>
+    </div>
     <div className="stem-stage">
       <div className="kernel-card" data-feedback-id="Actual 21 by 4 stem kernel">
-        <div className="mini-heading"><div><small>THE LEARNED QUESTION</small><h3>{filter.filter_human_label} kernel · 4 × 21</h3></div><span>blue positive · coral negative</span></div>
-        <WeightMatrix weights={filter.weights_base_rows_by_positions} gain={gain} />
+        <div className="mini-heading"><div><small>THE LEARNED QUESTION</small><h3>{filter.filter_human_label} kernel · 4 × 21</h3></div><span>{orientation === "model" ? "stored left-to-right" : "positions reversed · bases complemented"}</span></div>
+        {kernelView === "heatmap" && <WeightMatrix weights={orientedWeights} gain={gain} />}
+        {kernelView === "signed_logo" && <><SignedWeightLogo weights={centered.centered} gain={gain} /><p className="logo-explanation">Each position’s A/C/G/T mean was removed. The exact equivalent bias is <b>{centered.adjustedBias.toFixed(5)}</b> instead of {filter.bias.toFixed(5)}. Positive letters are above zero; negative letters are below it.</p></>}
+        {kernelView === "activation_logo" && (activationMotif ? <ActivationLogo motif={activationMotif} orientation={orientation} /> : <ActivationMotifState status={motifStatus} />)}
       </div>
       <div className="slide-symbol"><b>slides</b><span>↓</span></div>
       <div className="kernel-card selected-window">
@@ -280,6 +336,7 @@ function StemStory({ demo, start, setStart, gain }: { demo: Demo; start: number;
         <div className="selected-weights" style={css({ "--columns": 21 })}>{weighted.map((value, index) => <i key={index} style={{ background: signedColor(value, maximum) }}>{value.toFixed(2)}</i>)}</div>
       </div>
     </div>
+    <div className="orientation-convention" data-feedback-id="Stem-kernel orientation convention"><b>TensorFlow Conv1D convention · cross-correlation, not a spatially reversed mathematical convolution</b><code>output[o,f] = bias[f] + Σposition Σbase input[o+position,base] × kernel[position,base,f]</code><p>Sequence positions run left to right exactly as drawn. A/C/G/T is the feature-channel axis, so it is never rotated. Reverse complement reverses positions and exchanges A↔T and C↔G.</p><a href="https://www.tensorflow.org/api_docs/python/tf/nn/conv1d">TensorFlow Conv1D documentation ↗</a></div>
     <label className="range-control"><b>Slide the stem filter</b><input type="range" min="0" max="2093" value={start} onChange={event => setStart(Number(event.target.value))} /><span>output position {start + 1}</span></label>
     <div className="calculation-flow" data-feedback-id="Stem calculation">
       <span><small>dot product</small><b>{dotProduct.toFixed(3)}</b><em>21 selected weights added</em></span><i>+</i>
@@ -333,8 +390,8 @@ function ArchitectureMap({ selectedBlock, onBlock }: { selectedBlock: number; on
   </section>;
 }
 
-function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, signed = false, marker, onMarker, selectionStart, selectionWidth }: {
-  tensor: Tensor; values: Float32Array | null; mode: "full" | "zoom"; start: number; width: number; transfer: Transfer; gain: number; signed?: boolean; marker?: number; onMarker?: (value: number) => void; selectionStart?: number; selectionWidth?: number;
+function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, signed = false, marker, onMarker, selectionStart, selectionWidth, channelOrder }: {
+  tensor: Tensor; values: Float32Array | null; mode: "full" | "zoom"; start: number; width: number; transfer: Transfer; gain: number; signed?: boolean; marker?: number; onMarker?: (value: number) => void; selectionStart?: number; selectionWidth?: number; channelOrder: number[];
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fullWidth = tensor.full_heatmap.width_positions;
@@ -349,7 +406,8 @@ function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, sign
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) return;
     const image = context.createImageData(shownWidth, height);
-    for (let channel = 0; channel < height; channel += 1) {
+    for (let displayRow = 0; displayRow < height; displayRow += 1) {
+      const channel = channelOrder[displayRow];
       for (let column = 0; column < shownWidth; column += 1) {
         const sourceColumn = safeStart + column;
         const value = values[channel * fullWidth + sourceColumn];
@@ -361,12 +419,12 @@ function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, sign
               return Math.round(base + (target[index] - base) * level);
             })
           : heatColor(level).match(/\d+/g)!.map(Number);
-        const target = (channel * shownWidth + column) * 4;
+        const target = (displayRow * shownWidth + column) * 4;
         image.data[target] = color[0]; image.data[target + 1] = color[1]; image.data[target + 2] = color[2]; image.data[target + 3] = 255;
       }
     }
     context.putImageData(image, 0, 0);
-  }, [values, shownWidth, height, safeStart, fullWidth, tensor.min, tensor.max, transfer, gain, signed]);
+  }, [values, shownWidth, height, safeStart, fullWidth, tensor.min, tensor.max, transfer, gain, signed, channelOrder]);
   const click = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!onMarker) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -376,7 +434,7 @@ function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, sign
   const selectionLeft = selectionStart === undefined ? null : clamp((selectionStart - safeStart) / shownWidth * 100, 0, 100);
   const selectionPercent = selectionWidth === undefined ? null : clamp(selectionWidth / shownWidth * 100, 0, 100);
   return <div className={`tensor-canvas ${mode}`}>
-    <div className="channel-axis"><span>channel 1</span><b>512 channels</b><span>channel 512</span></div>
+    <div className="channel-axis"><span>rank 1 · Ch {channelOrder[0] + 1}</span><b>512 display rows</b><span>rank 512 · Ch {channelOrder[511] + 1}</span></div>
     <div className="canvas-shell" role={onMarker ? "button" : undefined} tabIndex={onMarker ? 0 : undefined} aria-label={onMarker ? "Move tensor zoom marker" : undefined} onClick={click} onKeyDown={event => {
       if (!onMarker || marker === undefined) return;
       if (event.key === "ArrowLeft") onMarker(clamp(marker - 1, safeStart, safeStart + shownWidth - 1));
@@ -451,7 +509,7 @@ function VectorCanvas({ values, signed = false }: { values: number[]; signed?: b
   return <canvas ref={ref} className="vector-canvas" />;
 }
 
-function ResidualStory({ demo, block, setBlock }: { demo: Demo; block: number; setBlock: (value: number) => void }) {
+function ResidualStory({ demo, block, setBlock, channelOrder }: { demo: Demo; block: number; setBlock: (value: number) => void; channelOrder: number[] }) {
   const kernel = demo.residual_kernel_demos[block - 1];
   const dilation = DILATIONS[block - 1];
   const inputKey = (block === 1 ? "stem" : `res${block - 1}`) as TensorKey;
@@ -497,14 +555,14 @@ function ResidualStory({ demo, block, setBlock }: { demo: Demo; block: number; s
     </div>
 
     <div className="tap-microscope" data-feedback-id="Cross-channel residual kernel">
-      <div className="mini-heading"><div><small>ONE REAL KERNEL SLICE</small><h3>Producing output channel {outputChannel + 1}</h3></div><span>selection: channel with the largest peak in this block</span></div>
+      <div className="mini-heading"><div><small>ONE REAL KERNEL SLICE</small><h3>Producing Channel {outputChannel + 1}</h3></div><span>display rank {displayRank(channelOrder, outputChannel)} · immutable ID {outputChannel}</span></div>
       <p className="selection-caveat">This is a useful high-activation example, not a claim that this channel is the most biologically important.</p>
       <div className="tap-columns">
         {[0, 1, 2].map(tap => <article key={tap}>
           <h4>Tap {tap + 1}</h4><div className="vector-equation">
-            <span><VectorCanvas values={calculation?.features[tap] ?? Array(512).fill(0)} /><small>512 input features</small></span><b>×</b>
-            <span><VectorCanvas values={calculation?.weights[tap] ?? kernel.weights_input_channels_by_taps.map(row => row[tap])} signed /><small>512 learned weights</small></span><b>=</b>
-            <span><VectorCanvas values={calculation?.products[tap] ?? Array(512).fill(0)} signed /><small>512 products</small></span>
+            <span><VectorCanvas values={channelOrder.map(channel => (calculation?.features[tap] ?? Array(512).fill(0))[channel])} /><small>512 input features · global order</small></span><b>×</b>
+            <span><VectorCanvas values={channelOrder.map(channel => (calculation?.weights[tap] ?? kernel.weights_input_channels_by_taps.map(row => row[tap]))[channel])} signed /><small>same input-channel order</small></span><b>=</b>
+            <span><VectorCanvas values={channelOrder.map(channel => (calculation?.products[tap] ?? Array(512).fill(0))[channel])} signed /><small>same product order</small></span>
           </div><strong>tap sum {calculation?.tapSums[tap].toFixed(4) ?? "…"}</strong>
         </article>)}
       </div>
@@ -531,7 +589,7 @@ function MiniBars({ values, signed = false, count = 160 }: { values: number[]; s
   return <div className={`mini-bars ${signed ? "signed" : ""}`} style={css({ "--columns": sampled.length })}>{sampled.map((value, index) => <i key={index} style={{ height: `${3 + Math.abs(value) / maximum * 72}px`, background: signed ? signedColor(value, maximum) : heatColor(.25 + .75 * value / maximum) }} />)}</div>;
 }
 
-function OutputStory({ demo }: { demo: Demo }) {
+function OutputStory({ demo, channelOrder }: { demo: Demo; channelOrder: number[] }) {
   const logits = demo.tensors.profile_logits.position_max;
   const probabilities = demo.tensors.profile_probabilities.position_max;
   const expectedCounts = demo.tensors.profile_signal.position_max;
@@ -559,9 +617,9 @@ function OutputStory({ demo }: { demo: Demo }) {
       </article>
       <article data-feedback-id="Count head stages">
         <div className="mini-heading"><div><small>COUNT HEAD · HOW MUCH?</small><h3>One total-count scalar</h3></div><span>global mean → dense</span></div>
-        <div className="count-stage"><b>512 × 1,074</b><span>mean each channel across all 1,074 positions</span><MiniBars values={pooled} /></div>
+        <div className="count-stage"><b>512 × 1,074</b><span>mean each channel across all 1,074 positions · current global order</span><MiniBars values={channelOrder.map(channel => pooled[channel])} /></div>
         <FlowArrow label="one mean per channel" />
-        <div className="count-stage"><b>512 pooled features</b><span>multiply by 512 dense weights</span><MiniBars values={denseProducts} signed /></div>
+        <div className="count-stage"><b>512 pooled features</b><span>multiply by matching dense weights · same immutable IDs</span><MiniBars values={channelOrder.map(channel => denseProducts[channel])} signed /></div>
         <FlowArrow label="add products and bias" />
         <div className="count-equation"><span>dense products <b>{denseSum.toFixed(3)}</b></span><i>+</i><span>bias <b>{demo.head_demos.count_dense_bias.toFixed(3)}</b></span><i>=</i><span>log-count <b>{demo.outputs.logcount.toFixed(3)}</b></span></div>
         <FlowArrow label="exp(log-count) − 1" />
@@ -572,7 +630,7 @@ function OutputStory({ demo }: { demo: Demo }) {
   </section>;
 }
 
-function ProfileKernelHeatmap({ weights, bias }: { weights: number[][]; bias: number }) {
+function ProfileKernelHeatmap({ weights, bias, channelOrder }: { weights: number[][]; bias: number; channelOrder: number[] }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [gain, setGain] = useState(1.8);
   const [cursor, setCursor] = useState({ channel: 255, position: 37 });
@@ -585,15 +643,16 @@ function ProfileKernelHeatmap({ weights, bias }: { weights: number[][]; bias: nu
     const context = canvas.getContext("2d");
     if (!context) return;
     const image = context.createImageData(75, 512);
-    for (let channel = 0; channel < 512; channel += 1) {
+    for (let displayRow = 0; displayRow < 512; displayRow += 1) {
+      const channel = channelOrder[displayRow];
       for (let position = 0; position < 75; position += 1) {
         const [red, green, blue] = signedRgb(weights[channel][position], robustMaximum / gain);
-        const index = (channel * 75 + position) * 4;
+        const index = (displayRow * 75 + position) * 4;
         image.data[index] = red; image.data[index + 1] = green; image.data[index + 2] = blue; image.data[index + 3] = 255;
       }
     }
     context.putImageData(image, 0, 0);
-  }, [weights, robustMaximum, gain]);
+  }, [weights, robustMaximum, gain, channelOrder]);
   const select = (clientX: number, clientY: number, target: HTMLCanvasElement) => {
     const rect = target.getBoundingClientRect();
     setCursor({
@@ -605,7 +664,7 @@ function ProfileKernelHeatmap({ weights, bias }: { weights: number[][]; bias: nu
     <div className="mini-heading"><div><small>THE LEARNED PROFILE KERNEL</small><h3>75 relative positions × 512 input channels</h3></div><span>displayed as 512 channel rows × 75 position columns</span></div>
     <p>This one signed weight matrix is reused at every output position. Blue weights push a logit upward; coral weights push it downward. A color alone is not a biological motif—the weight acts on a learned final-layer feature.</p>
     <div className="profile-kernel-layout">
-      <div className="profile-kernel-axis"><span>channel 1</span><b>512 input channels</b><span>channel 512</span></div>
+      <div className="profile-kernel-axis"><span>rank 1 · Ch {channelOrder[0] + 1}</span><b>512 input channels</b><span>rank 512 · Ch {channelOrder[511] + 1}</span></div>
       <div className="profile-kernel-shell">
         <canvas ref={canvasRef} aria-label="Profile convolution kernel heatmap, 512 channels by 75 relative positions" onPointerMove={event => select(event.clientX, event.clientY, event.currentTarget)} />
         <i style={{ left: `${cursor.position / 75 * 100}%`, top: `${cursor.channel / 512 * 100}%`, width: `${100 / 75}%`, height: `${100 / 512}%` }} />
@@ -614,14 +673,14 @@ function ProfileKernelHeatmap({ weights, bias }: { weights: number[][]; bias: nu
     </div>
     <div className="profile-kernel-controls">
       <label><b>Weight contrast · {gain.toFixed(1)}×</b><input type="range" min="0.5" max="5" step="0.1" value={gain} onChange={event => setGain(Number(event.target.value))} /></label>
-      <div><span>selected weight</span><b>relative {cursor.position + 1} × channel {cursor.channel + 1}</b><strong>{weights[cursor.channel][cursor.position].toFixed(5)}</strong></div>
+      <div><span>selected weight</span><b>relative {cursor.position + 1} × rank {cursor.channel + 1} · Channel {channelOrder[cursor.channel] + 1}</b><strong>{weights[channelOrder[cursor.channel]][cursor.position].toFixed(5)}</strong></div>
       <div><span>profile bias</span><b>added once after the 38,400 products are summed</b><strong>{bias.toFixed(5)}</strong></div>
     </div>
     <div className="profile-kernel-equation"><span>selected 512 × 75 tensor window</span><i>⊙</i><span>shared 512 × 75 kernel</span><i>Σ</i><span>38,400 products + bias</span><i>→</i><strong>one profile logit</strong></div>
   </div>;
 }
 
-function ProfileLayerView({ demo, finalTensor, values, error }: { demo: Demo; finalTensor: Tensor; values: Float32Array | null; error: string | null }) {
+function ProfileLayerView({ demo, finalTensor, values, error, channelOrder }: { demo: Demo; finalTensor: Tensor; values: Float32Array | null; error: string | null; channelOrder: number[] }) {
   const [profilePosition, setProfilePosition] = useState(500);
   const logits = demo.tensors.profile_logits.position_max;
   const probabilities = demo.tensors.profile_probabilities.position_max;
@@ -637,11 +696,11 @@ function ProfileLayerView({ demo, finalTensor, values, error }: { demo: Demo; fi
     {error && <div className="tensor-error" role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
     <div className="full-view-card profile-before">
       <div className="mini-heading"><div><small>BEFORE · FINAL BACKBONE TENSOR</small><h3>512 channels × 1,074 positions</h3></div><span>the outlined 75-position window produces one selected logit</span></div>
-      <div className="whole-length-frame" style={{ width: `${inputWidth}%` }}><TensorCanvas tensor={finalTensor} values={values} mode="full" start={0} width={1074} transfer="sqrt" gain={1.8} marker={undefined} onMarker={chooseFromTensor} selectionStart={profilePosition} selectionWidth={75} /></div>
+      <div className="whole-length-frame" style={{ width: `${inputWidth}%` }}><TensorCanvas tensor={finalTensor} values={values} mode="full" start={0} width={1074} transfer="sqrt" gain={1.8} marker={undefined} onMarker={chooseFromTensor} selectionStart={profilePosition} selectionWidth={75} channelOrder={channelOrder} /></div>
       <label className="range-control"><b>Move the width-75 profile kernel</b><input type="range" min="0" max="999" value={profilePosition} onChange={event => setProfilePosition(Number(event.target.value))} /><span>output {profilePosition + 1} / 1,000</span></label>
     </div>
     <FlowArrow label="the same learned kernel is placed over this 75-position window" />
-    <ProfileKernelHeatmap weights={demo.head_demos.profile_weights_input_channels_by_positions} bias={demo.head_demos.profile_bias} />
+    <ProfileKernelHeatmap weights={demo.head_demos.profile_weights_input_channels_by_positions} bias={demo.head_demos.profile_bias} channelOrder={channelOrder} />
     <FlowArrow label="element-wise multiply → sum 38,400 products → add bias → slide one position" />
     <div className="profile-stage-stack" style={{ width: `${outputWidth}%` }}>
       <article><div className="mini-heading"><div><small>AFTER CONVOLUTION</small><h3>1 × 1,000 raw profile logits</h3></div><span>one score per valid kernel position</span></div><SignalCanvas track={logits} start={0} width={1000} marker={profilePosition} signed onMarker={setProfilePosition} label="Select a raw profile logit" /></article>
@@ -655,7 +714,7 @@ function ProfileLayerView({ demo, finalTensor, values, error }: { demo: Demo; fi
   </div>;
 }
 
-function TensorInspector({ demo }: { demo: Demo }) {
+function TensorInspector({ demo, channelOrder, orderName }: { demo: Demo; channelOrder: number[]; orderName: ChannelOrder }) {
   const [layer, setLayer] = useState<LayerKey>("stem");
   const [computation, setComputation] = useState<ComputationStage>("relu");
   const [view, setView] = useState<InspectorView>("tensor");
@@ -708,7 +767,7 @@ function TensorInspector({ demo }: { demo: Demo }) {
       <label><span>Layer</span><select value={layer} onChange={event => chooseStage(event.target.value as LayerKey)}><option value="stem">Stem · 512 × 2,094</option>{DILATIONS.map((dilation, index) => <option key={dilation} value={`res${index + 1}`}>Residual {index + 1} · 512 × {LENGTHS[index + 2].toLocaleString()}</option>)}<option value="profile">Profile output · 512 × 1,074 → 1 × 1,000</option></select></label>
       <div className="profile-shape-summary"><span>Selected transition</span><b>512 × 1,074 → Conv k=75 → 1 × 1,000</b></div>
     </div>
-    <ProfileLayerView demo={demo} finalTensor={tensor} values={values} error={error} />
+    <ProfileLayerView demo={demo} finalTensor={tensor} values={values} error={error} channelOrder={channelOrder} />
   </section>;
 
   return <section className="inspector" id="tensor-inspector">
@@ -725,12 +784,13 @@ function TensorInspector({ demo }: { demo: Demo }) {
       {view === "channel" && <label><span>Channel number</span><input type="number" min="1" max="512" value={channel + 1} onChange={event => setChannel(clamp(Number(event.target.value || 1) - 1, 0, 511))} /></label>}
     </div>
     <div className="computation-note"><b>{computationLabel}</b><span>{layer === "stem" ? "The stem has no shortcut addition." : computation === "output" ? "This is the tensor passed to the next block." : "This view isolates the residual block’s transform path before its shortcut is added."}</span></div>
+    <div className="channel-order-note"><b>{CHANNEL_ORDER_LABELS[orderName]}</b><span>Every tensor row uses the same display permutation. Shortcut rows, residual input/output axes, head weights, and immutable channel IDs stay synchronized.</span></div>
     <div className="truth-note"><b>{(tensor.zero_fraction * 100).toFixed(1)}% exact zeros</b><span>{signed ? "Coral cells are negative; blue cells are positive." : "Blank-looking areas are real zero or weak activations, not missing data."}</span><em>Published checkpoint · raw float32</em></div>
     {error && <div className="tensor-error" role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
     {view === "tensor" ? <>
-      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE TENSOR</small><h3>All 512 channels × {length.toLocaleString()} positions</h3></div><span>{croppedPerSide ? `${croppedPerSide.toLocaleString()} positions cropped from each side · ` : "full stem width · "}click to move the zoom</span></div><div className="whole-length-frame" style={{ width: `${wholeWidthPercent}%` }}><TensorCanvas tensor={tensor} values={values} mode="full" start={0} width={length} transfer={transfer} gain={gain} signed={signed} marker={center} onMarker={setCenter} /></div></div>
+      <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE TENSOR</small><h3>All 512 channels × {length.toLocaleString()} positions</h3></div><span>{croppedPerSide ? `${croppedPerSide.toLocaleString()} positions cropped from each side · ` : "full stem width · "}click to move the zoom</span></div><div className="whole-length-frame" style={{ width: `${wholeWidthPercent}%` }}><TensorCanvas tensor={tensor} values={values} mode="full" start={0} width={length} transfer={transfer} gain={gain} signed={signed} marker={center} onMarker={setCenter} channelOrder={channelOrder} /></div></div>
       <FlowArrow label="the outlined position opens here" />
-      <div className="zoom-view-card"><div className="mini-heading"><div><small>ZOOM</small><h3>All 512 channels × 61 consecutive positions</h3></div><span>same tensor, larger cells</span></div><TensorCanvas tensor={tensor} values={values} mode="zoom" start={zoomStart} width={zoomWidth} transfer={transfer} gain={gain} signed={signed} marker={center} /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} /></div>
+      <div className="zoom-view-card"><div className="mini-heading"><div><small>ZOOM</small><h3>All 512 channels × 61 consecutive positions</h3></div><span>same tensor, larger cells</span></div><TensorCanvas tensor={tensor} values={values} mode="zoom" start={zoomStart} width={zoomWidth} transfer={transfer} gain={gain} signed={signed} marker={center} channelOrder={channelOrder} /><BaseLetters sequence={demo.input.sequence} positions={inputPositions} /></div>
     </> : <>
       <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE LENGTH · {viewTitle.toUpperCase()}</small><h3>All {length.toLocaleString()} positions</h3></div><span>{wholeWidthPercent.toFixed(1)}% of stem width · centered crop</span></div><div className="whole-length-frame" style={{ width: `${wholeWidthPercent}%` }}><SignalCanvas track={track} start={0} width={length} marker={center} signed={signed} colorGain={view === "max" || view === "min" ? extremaGain : 1} onMarker={setCenter} label={`Move the ${viewTitle} zoom marker`} /><div className="axis"><span>position 1</span><span>complete representation first</span><span>position {length.toLocaleString()}</span></div></div></div>
       <FlowArrow label="the selected coordinate opens here" />
@@ -797,9 +857,12 @@ export default function Home() {
   const [windowStart, setWindowStart] = useState(PRESETS.k562.filter_demos[0].peak_position_zero_based);
   const [block, setBlock] = useState(1);
   const [colorGain, setColorGain] = useState(1);
+  const [channelOrderName, setChannelOrderName] = useState<ChannelOrder>("original");
   const demo = PRESETS[preset];
+  const auditCheckpoint = AUDIT_CHECKPOINTS[preset === "gm21515" ? "gm21515" : "k562-peak"];
+  const channelOrder = auditCheckpoint.channel_orders[channelOrderName];
   return <main>
-    <header className="topbar"><a href="#top" className="brand"><b>SEQ</b><span>CNN EXPLAINER</span></a><nav><a href="#architecture">Model map</a><a href="#stem">Stem</a><a href="#residual">Residual blocks</a><a href="#outputs">Outputs</a><a href="#tensor-inspector">Tensors</a><a href="/dilation-trace">Dilation evolution ↗</a></nav><label><span>Demo</span><select value={preset} onChange={event => { const nextPreset = event.target.value; const nextDemo = PRESETS[nextPreset]; setPreset(nextPreset); setWindowStart(nextDemo.filter_demos[0].peak_position_zero_based); setBlock(1); }}><option value="k562">K562 DNase checkpoint</option><option value="gm21515">GM21515 ATAC checkpoint · same DNA</option><option value="synthetic">K562 model · synthetic DNA</option></select></label></header>
+    <header className="topbar"><a href="#top" className="brand"><b>SEQ</b><span>CNN EXPLAINER</span></a><nav><a href="#architecture">Model map</a><a href="#stem">Stem</a><a href="#residual">Residual blocks</a><a href="#outputs">Outputs</a><a href="#tensor-inspector">Tensors</a><a href="/dilation-trace">Dilation evolution ↗</a><a href="/model-audit">Model audit ↗</a></nav><div className="topbar-controls"><label><span>Demo</span><select value={preset} onChange={event => { const nextPreset = event.target.value; const nextDemo = PRESETS[nextPreset]; setPreset(nextPreset); setWindowStart(nextDemo.filter_demos[0].peak_position_zero_based); setBlock(1); }}><option value="k562">K562 DNase checkpoint</option><option value="gm21515">GM21515 ATAC checkpoint</option><option value="synthetic">K562 synthetic sequence</option></select></label><label><span>Channel order</span><select value={channelOrderName} onChange={event => setChannelOrderName(event.target.value as ChannelOrder)}>{CHANNEL_ORDER_KEYS.map(key => <option value={key} key={key}>{CHANNEL_ORDER_LABELS[key]}</option>)}</select></label></div></header>
     <div id="top" />
     <section className="hero">
       <div><p>ONE CALCULATION · FOLLOWED TOP TO BOTTOM</p><h1>How a DNA sequence becomes an accessibility prediction</h1><span>Start with bases. Watch a local detector slide. Then see dilated blocks combine learned features across distance and channels.</span></div>
@@ -819,15 +882,15 @@ export default function Home() {
       <p className="takeaway"><b>Mental picture:</b> sequence position runs left to right. The four base rows are channels, not height in a biological image.</p>
     </section>
     <FlowArrow label="apply 512 different local detectors" />
-    <StemStory demo={demo} start={windowStart} setStart={setWindowStart} gain={colorGain} />
+    <StemStory demo={demo} start={windowStart} setStart={setWindowStart} gain={colorGain} channelOrder={channelOrder} orderName={channelOrderName} motifStatus={auditCheckpoint.activation_motifs} />
     <FlowArrow label="stack all 512 output rows" />
     <section className="bridge-section" data-feedback-id="Stem tensor bridge"><div><small>THE FIRST FEATURE TENSOR</small><h2>512 learned feature rows × 2,094 positions</h2><p>Most cells are zero after ReLU. A bright cell means one learned detector responded at one position; it does not yet say why the final prediction changed.</p></div><label><span>Kernel color saturation · {colorGain.toFixed(1)}×</span><input type="range" min="0.5" max="2" step="0.1" value={colorGain} onChange={event => setColorGain(Number(event.target.value))} /></label></section>
     <FlowArrow label="build wider context through eight blocks" />
-    <ResidualStory key={`${preset}-${block}`} demo={demo} block={block} setBlock={setBlock} />
+    <ResidualStory key={`${preset}-${block}`} demo={demo} block={block} setBlock={setBlock} channelOrder={channelOrder} />
     <FlowArrow label="read the final 512 × 1,074 tensor two ways" />
-    <OutputStory demo={demo} />
+    <OutputStory demo={demo} channelOrder={channelOrder} />
     <FlowArrow label="optional: inspect every tensor value" />
-    <TensorInspector demo={demo} />
+    <TensorInspector demo={demo} channelOrder={channelOrder} orderName={channelOrderName} />
     <section className="attribution-note"><div><small>NOT PART OF THIS FORWARD-PASS DEMO</small><h2>Input attribution requires an additional analysis</h2></div><p>DeepLIFT, SHAP, gradients, or another attribution method must generate base-level attribution scores. Activations alone show what each layer computed, not which input bases caused the final prediction.</p></section>
     <footer><b>Sequence CNN Explainer · structural prototype</b><span>Model values: published {demo.provenance.biosample} ChromBPNet checkpoint · coordinates: input-relative unless explicitly labeled</span></footer>
     <FeedbackLayer />

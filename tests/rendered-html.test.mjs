@@ -147,6 +147,15 @@ test("the page teaches one connected flow and avoids the discarded GC overview",
   assert.match(page, /GM21515 ATAC checkpoint/);
   assert.match(page, /nextStage === "stem" \? \(computation === "output" \? "relu" : computation\) : layer === "stem" \? "output"/);
   assert.match(page, /type="number" min="1" max="512"/);
+  assert.match(page, /Heatmap/);
+  assert.match(page, /Weight logo/);
+  assert.match(page, /Activation motif/);
+  assert.match(page, /TensorFlow Conv1D convention/);
+  assert.match(page, /cross-correlation/);
+  assert.match(page, /A↔T and C↔G/);
+  assert.match(page, /centeredStemWeights/);
+  assert.match(page, /channelOrder\.map/);
+  assert.match(page, /Model audit/);
   assert.doesNotMatch(page, /GC fraction/i);
 });
 
@@ -160,5 +169,39 @@ test("the dilation evolution demo separates geometric reach from measured contri
   assert.match(page, /38,400 activation × weight products/);
   assert.match(page, /WHOLE TENSOR → MAGNIFIED FILMSTRIP/);
   assert.match(page, /FullTensorMagnifier/);
-  assert.match(page, /12 contiguous channels/);
+  assert.match(page, /12 display-adjacent, permanently identified channels/);
+  assert.match(page, /Global channel order/);
+});
+
+test("the audit artifact preserves immutable channels and evidence boundaries", async () => {
+  const artifact = JSON.parse(await readFile(new URL("app/data/model-audit-summary.json", root), "utf8"));
+  assert.equal(artifact.schema_version, "1.0.0");
+  assert.deepEqual(artifact.evidence_levels.map(level => level.id), ["descriptive", "mechanism", "biology"]);
+  for (const preset of ["k562-peak", "gm21515"]) {
+    const checkpoint = artifact.checkpoints[preset];
+    assert.equal(checkpoint.channel_registry.length, 512);
+    assert.deepEqual(checkpoint.channel_registry.map(channel => channel.id_zero_based), Array.from({ length: 512 }, (_, index) => index));
+    for (const order of Object.values(checkpoint.channel_orders)) {
+      assert.equal(order.length, 512);
+      assert.deepEqual([...order].sort((a, b) => a - b), Array.from({ length: 512 }, (_, index) => index));
+    }
+    assert.equal(checkpoint.layer_similarity.values.length, 9);
+    assert.equal(checkpoint.activation_motifs.status, "not_generated");
+  }
+  assert.ok(Math.abs(artifact.checkpoints["k562-peak"].layers.stem.exact_zero_fraction - .9863) < .001);
+  assert.ok(Math.abs(artifact.checkpoints["k562-peak"].layers.res8.exact_zero_fraction - .8844) < .001);
+  assert.ok(Math.abs(artifact.checkpoints.gm21515.layers.stem.exact_zero_fraction - .9813) < .001);
+  assert.ok(Math.abs(artifact.checkpoints.gm21515.layers.res8.exact_zero_fraction - .8187) < .001);
+});
+
+test("the audit page distinguishes description, mechanism, and biology", async () => {
+  const page = await readFile(new URL("app/model-audit/page.tsx", root), "utf8");
+  assert.match(page, /Three different strengths of claim/);
+  assert.match(page, /Permanent channel registry/i);
+  assert.match(page, /Do dilated kernels really mix channels/);
+  assert.match(page, /CKA compares whole representations/);
+  assert.match(page, /Corpus-derived logos are deliberately not fabricated/);
+  assert.match(page, /TF-MoDISco/);
+  assert.match(page, /JASPAR/);
+  assert.match(page, /Tomtom/);
 });
