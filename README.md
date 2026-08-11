@@ -47,3 +47,7 @@ The current activation statistics are explicitly labeled as a one-locus descript
 When a genomic FASTA corpus is available, `scripts/build_activation_motifs.py` streams it through the exact TensorFlow stem cross-correlation, keeps a bounded top-activation reservoir, removes overlapping 21-mers, builds PFMs/information content, and can merge the results into the audit JSON. Until that command is run on a documented corpus, the site shows a deliberate empty state rather than a pseudo-motif.
 
 The checkpoint extraction script is maintained at `scripts/run_chrombpnet_checkpoint.py`.
+
+## Research and communication roadmap
+
+[`docs/interpretability-and-claude-handoff-plan.md`](docs/interpretability-and-claude-handoff-plan.md) records the computer-vision interpretation methods still worth adapting, the decision to add Basset before Basenji, the multi-model acceptance gates, and a ready-to-use staged prompt for Claude Code. The prompt deliberately stops after the repository audit, again after the report, and again after the slide deck so scientific claims can be reviewed before video production.
