@@ -219,3 +219,26 @@ test("the audit page distinguishes description, mechanism, and biology", async (
   assert.match(page, /This locus: pooled activation × weight/);
   assert.match(page, /previous per-card normalization made them look falsely identical/);
 });
+
+test("the Basset page keeps motif detection, pooling, channel mixing, and dense readout connected", async () => {
+  const page = await readFile(new URL("app/basset/page.tsx", root), "utf8");
+  assert.match(page, /Shrink the sequence, mix the motifs, classify 164 cell types/);
+  assert.match(page, /no padding/i);
+  assert.match(page, /MAX-POOL MICROSCOPE/);
+  assert.match(page, /complete checkpoint graph/i);
+  assert.match(page, /full tensors shrink/i);
+  assert.match(page, /300 channels × 11 nearby positions/i);
+  assert.match(page, /3,300 learned inputs/);
+  assert.match(page, /dense layer reads all 200 × 10 cells at once/i);
+  assert.match(page, /ChromBPNet.*preserve a long spatial grid/s);
+  assert.match(page, /not attribution scores for the final prediction/i);
+
+  const data = JSON.parse(await readFile(new URL("app/data/basset-demo.json", root), "utf8"));
+  assert.equal(data.sequence.length, 600);
+  assert.equal(data.outputs.all_labels.length, 164);
+  assert.ok(data.verification.maximum_absolute_error < 1e-9);
+  assert.deepEqual(data.architecture.map(stage => stage.shape), [
+    [4, 600], [300, 582], [300, 194], [200, 184], [200, 46],
+    [200, 40], [200, 10], [2000], [1000], [1000], [164],
+  ]);
+});

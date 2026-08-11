@@ -1,6 +1,6 @@
 # Sequence CNN Explainer
 
-An interactive, top-to-bottom explanation of published ChromBPNet no-bias sequence models. The explainer follows one calculation from a 2,114-base one-hot input through:
+An interactive, top-to-bottom explanation of published sequence CNN checkpoints. The main explainer follows a ChromBPNet calculation from a 2,114-base one-hot input through:
 
 1. the 21-base stem convolution;
 2. eight dilated residual blocks;
@@ -14,6 +14,8 @@ Two supporting routes keep the main visual story focused:
 
 - `/dilation-trace` follows one aligned tensor region through all eight residual blocks.
 - `/model-audit` separates descriptive structure, model mechanism, and biological evidence while exposing layer statistics, channel rankings, kernel diagnostics, and representation similarity.
+
+A third route, `/basset`, adapts the original published Basset Torch7 checkpoint. It connects a 600 bp input to three convolution/max-pooling stages, a `200 × 10 → 2,000` flattening step, two dense layers, and 164 cell-type accessibility probabilities. The page includes an exact sliding-filter calculation, a max-pooling microscope, complete tensor heatmaps with local zoom, a `300 channels × 11 positions` Conv2 mixing example, and the dense global readout.
 
 The default demo uses forward-pass activations extracted from the K562 DNase checkpoint `model.chrombpnet_nobias.fold_0.ENCSR000EOT.h5`. A second real checkpoint uses the published GM21515 ATAC model `model.chrombpnet_nobias.fold_0.ENCSR960KGO.h5` on the same DNA window, allowing a controlled model-to-model comparison. Raw browser heatmaps are stored as gzip-compressed, channel-major little-endian float32 files so weak nonzero activations are not lost to display quantization.
 
@@ -31,7 +33,21 @@ Open [http://localhost:3000](http://localhost:3000).
 npm test
 ```
 
-The tests check all three presets, tensor shapes and file sizes, residual convolution/ReLU/shortcut identities, profile-head convolution, profile normalization, expected-count totals, the count-head dense calculation, the ACG/GCA orientation convention, exact centered-weight bias compensation, reverse-complement involution, PFM information-content bounds, and global permutation invariance.
+The tests check all three ChromBPNet presets, tensor shapes and file sizes, residual convolution/ReLU/shortcut identities, profile-head convolution, profile normalization, expected-count totals, the count-head dense calculation, the ACG/GCA orientation convention, exact centered-weight bias compensation, reverse-complement involution, PFM information-content bounds, and global permutation invariance. They also validate the Basset checkpoint graph, receptive fields, binary tensor assets, stem calculation, Conv2 channel mixing, dense readout, 164 labels, and independent NumPy/TensorFlow agreement.
+
+## Rebuild the Basset adapter
+
+The 1.7 GB decompressed Torch7 checkpoint is never committed or deployed. After downloading the official `pretrained_model.th.gz`, clone the official Basset repository for its tutorial sequence and target labels, then run:
+
+```bash
+models/.extract-env/bin/python scripts/export_basset_demo.py \
+  --checkpoint /path/to/pretrained_model.th \
+  --fasta /path/to/Basset/tutorials/satmut_eg/hoxa_boundary.fa \
+  --targets /path/to/Basset/data/models/targets.txt
+models/.extract-env/bin/python scripts/verify_basset_adapter.py
+```
+
+The exporter validates the decompressed checkpoint SHA-256, reads the stored module graph rather than guessing from a parameter file, evaluates every layer twice with independent NumPy and TensorFlow implementations, and exports about 1.1 MB of float32 browser tensors plus a compact JSON narrative artifact. See [`docs/basset-checkpoint-adapter.md`](docs/basset-checkpoint-adapter.md) for the provenance and operator conventions.
 
 ## Rebuild the compact audit artifact
 

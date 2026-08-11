@@ -7,7 +7,7 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 
 export const metadata: Metadata = {
   title: "Sequence CNN Explainer",
-  description: "Build a spatial mental model of one-hot DNA convolutions, residual blocks, and ChromBPNet tensor dimensions.",
+  description: "Build a spatial mental model of how ChromBPNet and Basset extract, combine, and read features from one-hot DNA sequences.",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 };
 
