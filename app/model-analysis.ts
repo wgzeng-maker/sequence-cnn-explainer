@@ -10,6 +10,9 @@ export type ChannelMetric = {
   final_rms: number;
   profile_influence: number;
   count_influence: number;
+  final_mean_activation: number;
+  count_weight: number;
+  count_contribution: number;
 };
 
 export type ChannelRegistry = {

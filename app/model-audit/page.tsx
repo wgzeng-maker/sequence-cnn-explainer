@@ -7,7 +7,7 @@ import { CHANNEL_ORDER_LABELS, type ChannelOrder } from "../model-analysis";
 import styles from "./page.module.css";
 
 type LayerName = "stem" | "res1" | "res2" | "res3" | "res4" | "res5" | "res6" | "res7" | "res8";
-type RegistryRow = { id_zero_based: number; label: string; checkpoint_id: string; stem_occupancy: number; final_rms: number; profile_influence: number; count_influence: number };
+type RegistryRow = { id_zero_based: number; label: string; checkpoint_id: string; stem_occupancy: number; final_rms: number; profile_influence: number; count_influence: number; final_mean_activation: number; count_weight: number; count_contribution: number };
 type LayerMetric = { shape: number[]; exact_zero_fraction: number; tolerance_zero_fraction: number; value_quantiles: number[]; dynamic_range: number; median_active_channels_per_position: number; positive_run_count: number };
 type Checkpoint = {
   checkpoint: { experiment: string; biosample: string; assay: string; fold: number; model: string };
@@ -19,7 +19,7 @@ type Checkpoint = {
   kernels: {
     stem: Record<string, number | number[] | number[][]>;
     residual: Array<{ block: number; dilation: number; tap_energy_fraction: number[]; left_right_tap_cosine: number; diagonal_energy_fraction: number; effective_input_channels_quantiles: number[]; stable_rank: number; effective_rank: number }>;
-    heads: { profile_position_energy: number[]; profile_position_center_of_mass: number; profile_effective_input_channels: number; count_profile_absolute_weight_correlation: number };
+    heads: { profile_position_energy: number[]; profile_position_center_of_mass: number; profile_effective_input_channels: number; count_profile_absolute_weight_correlation: number; count_weights: number[]; count_bias: number; logcount: number; predicted_total_count: number };
   };
   activation_motifs: { status: string; reason: string; target_site_count_per_filter: number; planned_corpus: string; selection_rule: string };
 };
@@ -35,6 +35,48 @@ const format = (value: number) => value === 0 ? "0" : Math.abs(value) < .001 ? v
 function MetricBars({ values, labels }: { values: number[]; labels: string[] }) {
   const maximum = Math.max(...values.map(Math.abs), 1e-12);
   return <div className={styles.metricBars}>{values.map((value, index) => <div key={labels[index]}><span>{labels[index]}</span><i style={css({ "--bar": Math.abs(value) / maximum })} /><b>{format(value)}</b></div>)}</div>;
+}
+
+function QuantileChart({ values }: { values: number[] }) {
+  const labels = ["min", "p01", "p25", "p50", "p75", "p99", "max"];
+  const maximum = Math.max(...values.map(Math.abs), 1e-12);
+  return <div className={styles.quantileWrap}>
+    <div className={styles.quantileChart}>{values.map((value, index) => <div key={labels[index]}><span>{labels[index]}</span><i style={css({ "--bar": Math.sqrt(Math.abs(value) / maximum) })} /><b>{format(value)}</b></div>)}</div>
+    <small>Seven cut-points summarize every tensor entry. Bar height uses a square-root display scale so p99 remains visible; printed values are exact.</small>
+  </div>;
+}
+
+function TapEnergyChart({ values }: { values: number[] }) {
+  const labels = ["left", "center", "right"];
+  const equal = 1 / 3;
+  const limit = .025;
+  return <div className={styles.tapEnergy}>
+    <div className={styles.tapScale}><span>+2.5 pp</span><i /><span>equal 33.3%</span><i /><span>−2.5 pp</span></div>
+    <div className={styles.tapColumns}>{values.map((value, index) => {
+      const delta = value - equal;
+      return <div key={labels[index]}><span>{labels[index]} tap</span><i className={delta >= 0 ? styles.tapPositive : styles.tapNegative} style={css({ "--delta": Math.min(Math.abs(delta) / limit, 1), "--direction": delta >= 0 ? -1 : 1 })} /><b>{(value * 100).toFixed(2)}%</b><small>{delta >= 0 ? "+" : ""}{(delta * 100).toFixed(2)} pp</small></div>;
+    })}</div>
+  </div>;
+}
+
+function ProfileEnergyChart({ values }: { values: number[] }) {
+  const maximum = Math.max(...values, 1e-12);
+  return <div className={styles.profileEnergy}>
+    <div>{values.map((value, index) => <i key={index} title={`kernel position ${index}: energy ${format(value)}`} style={{ height: `${Math.max(2, value / maximum * 92)}%` }} />)}</div>
+    <footer><span>position 0</span><b>energy = sum of squared weights over 512 channels</b><span>position 74</span></footer>
+  </div>;
+}
+
+function SignedStrip({ values, order, label }: { values: number[]; order: number[]; label: string }) {
+  const maximum = Math.max(...values.map(Math.abs), 1e-12);
+  return <div className={styles.signedStrip} aria-label={label}><div>{order.map(channel => {
+    const value = values[channel];
+    return <i key={channel} title={`Channel ${channel + 1}: ${format(value)}`} className={value >= 0 ? styles.stripPositive : styles.stripNegative} style={css({ "--magnitude": Math.abs(value) / maximum, "--side": value >= 0 ? -1 : 1 })} />;
+  })}</div><footer><span>display rank 1</span><b>zero</b><span>display rank 512</span></footer></div>;
+}
+
+function CorrelationRuler({ value }: { value: number }) {
+  return <div className={styles.correlationRuler}><div><span>−1</span><i /><span>0</span><i /><span>+1</span><b style={{ left: `${(value + 1) * 50}%` }} title={value.toFixed(3)} /></div><p><strong>{value.toFixed(3)}</strong> is very close to zero: across channels, large count-head weight magnitudes are almost unrelated to large profile-kernel energies.</p></div>;
 }
 
 function SimilarityMatrix({ checkpoint }: { checkpoint: Checkpoint }) {
@@ -84,7 +126,8 @@ export default function ModelAuditPage() {
     <section className={styles.section}>
       <div className={styles.panelHeading}><div><small>LAYER TABLE</small><h2>How the observed representation changes through the backbone</h2></div><span>exact full tensor · one displayed locus</span></div>
       <div className={styles.layerTable}><span>layer</span><span>shape</span><span>exact zeros</span><span>median active / position</span><span>dynamic range</span><span>positive runs</span>{layerValues.map((metric, index) => <div className={layer === LAYERS[index] ? styles.selectedRow : ""} key={LAYERS[index]} onClick={() => setLayer(LAYERS[index])}><b>{LAYERS[index]}</b><span>{metric.shape[0]} × {metric.shape[1].toLocaleString()}</span><span>{percent(metric.exact_zero_fraction)}</span><span>{metric.median_active_channels_per_position.toFixed(0)} / 512</span><span>{format(metric.dynamic_range)}</span><span>{metric.positive_run_count.toLocaleString()}</span></div>)}</div>
-      <div className={styles.selectedMetrics}><div><small>SELECTED LAYER</small><h3>{layer} · {checkpoint.layers[layer].shape.join(" × ")}</h3><p>Value quantiles: {checkpoint.layers[layer].value_quantiles.map(format).join(" · ")}</p></div><MetricBars values={checkpoint.layers[layer].value_quantiles} labels={["min", "p01", "p25", "p50", "p75", "p99", "max"]} /></div>
+      <div className={styles.metricDefinitions}><p><b>Median active / position</b><span>At each position, count channels with activation &gt; 10⁻⁷; then take the median across positions.</span></p><p><b>Positive runs</b><span>Total contiguous above-threshold stretches, counted separately within every channel. One long line is one run; one isolated cell is also one run.</span></p></div>
+      <div className={styles.selectedMetrics}><div><small>SELECTED LAYER</small><h3>{layer} · {checkpoint.layers[layer].shape.join(" × ")}</h3><p>This is a distribution summary of all {checkpoint.layers[layer].shape[0].toLocaleString()} × {checkpoint.layers[layer].shape[1].toLocaleString()} entries—not seven selected channels or positions. ReLU sparsity is why several percentiles can all equal zero.</p></div><QuantileChart values={checkpoint.layers[layer].value_quantiles} /></div>
     </section>
 
     <section className={styles.section}>
@@ -96,15 +139,20 @@ export default function ModelAuditPage() {
 
     <section className={styles.section}>
       <div className={styles.panelHeading}><div><small>KERNEL DIAGNOSTICS</small><h2>Do dilated kernels really mix channels?</h2></div><span>complete 3 × 512 × 512 kernels</span></div>
-      <div className={styles.residualCards}>{residual.map(block => <article key={block.block}><header><b>Block {block.block}</b><span>d={block.dilation}</span></header><MetricBars values={block.tap_energy_fraction} labels={["left tap", "center", "right tap"]} /><dl><dt>diagonal energy</dt><dd>{percent(block.diagonal_energy_fraction)}</dd><dt>effective input channels · median</dt><dd>{block.effective_input_channels_quantiles[3].toFixed(1)}</dd><dt>left/right cosine</dt><dd>{block.left_right_tap_cosine.toFixed(3)}</dd><dt>stable / effective rank</dt><dd>{block.stable_rank.toFixed(1)} / {block.effective_rank.toFixed(1)}</dd></dl></article>)}</div>
-      <p className={styles.takeaway}><b>Reading this:</b> low diagonal energy means a residual output channel is not merely reading the same-numbered input channel. Each tap mixes many learned feature channels; dilation controls how far apart the three mixed feature vectors are.</p>
+      <div className={styles.residualCards}>{residual.map(block => <article key={block.block}><header><b>Block {block.block}</b><span>d={block.dilation}</span></header><TapEnergyChart values={block.tap_energy_fraction} /><dl><dt>diagonal energy</dt><dd>{percent(block.diagonal_energy_fraction)}</dd><dt>effective input channels · median</dt><dd>{block.effective_input_channels_quantiles[3].toFixed(1)}</dd><dt>left/right cosine</dt><dd>{block.left_right_tap_cosine.toFixed(3)}</dd><dt>stable / effective rank</dt><dd>{block.stable_rank.toFixed(1)} / {block.effective_rank.toFixed(1)}</dd></dl></article>)}</div>
+      <p className={styles.takeaway}><b>Reading this:</b> each block’s three fractions sum to 100%. They genuinely are close to one-third; the previous per-card normalization made them look falsely identical. The new shared ±2.5 percentage-point scale exposes the differences. Weight energy measures squared weight magnitude—not activation or causal importance.</p>
     </section>
 
     <SimilarityMatrix checkpoint={checkpoint} />
 
     <section className={styles.section}>
       <div className={styles.panelHeading}><div><small>HEAD DIAGNOSTICS</small><h2>How the final feature tensor is read</h2></div><span>profile and count remain separate readers</span></div>
-      <div className={styles.headGrid}><article><small>PROFILE KERNEL</small><b>75 × 512 × 1</b><span>effective input channels: {checkpoint.kernels.heads.profile_effective_input_channels.toFixed(1)}</span><span>positional energy center: {checkpoint.kernels.heads.profile_position_center_of_mass.toFixed(2)} / 74</span><MetricBars values={checkpoint.kernels.heads.profile_position_energy} labels={checkpoint.kernels.heads.profile_position_energy.map((_, index) => `${index + 1}`)} /></article><article><small>COUNT / PROFILE AGREEMENT</small><b>{checkpoint.kernels.heads.count_profile_absolute_weight_correlation.toFixed(3)}</b><span>correlation between absolute count weights and profile channel-energy</span><p>A weak correlation is not a contradiction: the two heads ask different questions—total amount versus spatial distribution.</p></article></div>
+      <div className={styles.headGrid}><article><small>PROFILE KERNEL</small><b>75 × 512 × 1</b><span>effective input channels: {checkpoint.kernels.heads.profile_effective_input_channels.toFixed(1)}</span><span>positional energy center: {checkpoint.kernels.heads.profile_position_center_of_mass.toFixed(2)} / 74</span><ProfileEnergyChart values={checkpoint.kernels.heads.profile_position_energy} /></article><article><small>COUNT–PROFILE CHANNEL-WEIGHT CORRELATION</small><CorrelationRuler value={checkpoint.kernels.heads.count_profile_absolute_weight_correlation} /><span>Pearson correlation across 512 channels: |count dense weight| versus √(profile weight energy). This is not prediction agreement, accuracy, or biological agreement.</span></article></div>
+      <div className={styles.countDense}><div className={styles.countFlow}><span><small>FINAL TENSOR</small><b>512 × 1,074</b></span><i>mean each channel<br />across positions →</i><span><small>POOLED FEATURES</small><b>512 numbers</b></span><i>× 512 dense weights<br />and sum →</i><span><small>LOG-COUNT</small><b>{checkpoint.kernels.heads.logcount.toFixed(3)}</b></span><i>exp(x) − 1 →</i><span className={styles.countResult}><small>PREDICTED TOTAL</small><b>{checkpoint.kernels.heads.predicted_total_count.toFixed(1)}</b></span></div>
+        <div className={styles.denseChart}><header><b>Learned dense weights</b><span>blue raises log-count · coral lowers it</span></header><SignedStrip values={checkpoint.channel_registry.map(row => row.count_weight)} order={order} label="Count dense weights by channel" /></div>
+        <div className={styles.denseChart}><header><b>This locus: pooled activation × weight</b><span>same global channel order · signed contribution before bias</span></header><SignedStrip values={checkpoint.channel_registry.map(row => row.count_contribution)} order={order} label="Count contributions by channel" /></div>
+        <p className={styles.denseEquation}>Σ 512 channel contributions <b>{(checkpoint.kernels.heads.logcount - checkpoint.kernels.heads.count_bias).toFixed(3)}</b> + dense bias <b>{checkpoint.kernels.heads.count_bias.toFixed(3)}</b> = log-count <b>{checkpoint.kernels.heads.logcount.toFixed(3)}</b>.</p>
+      </div>
     </section>
 
     <section className={styles.section}>

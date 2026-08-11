@@ -187,6 +187,14 @@ test("the audit artifact preserves immutable channels and evidence boundaries", 
     }
     assert.equal(checkpoint.layer_similarity.values.length, 9);
     assert.equal(checkpoint.activation_motifs.status, "not_generated");
+    assert.equal(checkpoint.kernels.heads.count_weights.length, 512);
+    assert.ok(Number.isFinite(checkpoint.kernels.heads.count_bias));
+    assert.ok(Number.isFinite(checkpoint.kernels.heads.logcount));
+    assert.ok(Number.isFinite(checkpoint.kernels.heads.predicted_total_count));
+    assert.ok(checkpoint.channel_registry.every(channel => Number.isFinite(channel.count_contribution)));
+    for (const block of checkpoint.kernels.residual) {
+      assert.ok(Math.abs(block.tap_energy_fraction.reduce((sum, value) => sum + value, 0) - 1) < 1e-9);
+    }
   }
   assert.ok(Math.abs(artifact.checkpoints["k562-peak"].layers.stem.exact_zero_fraction - .9863) < .001);
   assert.ok(Math.abs(artifact.checkpoints["k562-peak"].layers.res8.exact_zero_fraction - .8844) < .001);
@@ -204,4 +212,10 @@ test("the audit page distinguishes description, mechanism, and biology", async (
   assert.match(page, /TF-MoDISco/);
   assert.match(page, /JASPAR/);
   assert.match(page, /Tomtom/);
+  assert.match(page, /Median active \/ position/);
+  assert.match(page, /Positive runs/);
+  assert.match(page, /COUNT–PROFILE CHANNEL-WEIGHT CORRELATION/);
+  assert.match(page, /Learned dense weights/);
+  assert.match(page, /This locus: pooled activation × weight/);
+  assert.match(page, /previous per-card normalization made them look falsely identical/);
 });

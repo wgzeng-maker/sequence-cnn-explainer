@@ -226,7 +226,16 @@ def checkpoint_summary(preset: str, model_path: Path) -> dict[str, Any]:
         "final_rms": float(final_rms[channel]),
         "profile_influence": float(profile_influence[channel]),
         "count_influence": float(count_influence[channel]),
+        "final_mean_activation": float(final_mean[channel]),
+        "count_weight": float(count[channel]),
+        "count_contribution": float(final_mean[channel] * count[channel]),
     } for channel in range(512)]
+    kernels = kernel_diagnostics(model_path)
+    kernels["heads"].update({
+        "count_bias": float(demo["head_demos"]["count_dense_bias"]),
+        "logcount": float(demo["outputs"]["logcount"]),
+        "predicted_total_count": float(demo["outputs"]["predicted_total_count"]),
+    })
     return {
         "preset_id": demo["input"]["preset_id"],
         "checkpoint": demo["provenance"],
@@ -240,7 +249,7 @@ def checkpoint_summary(preset: str, model_path: Path) -> dict[str, Any]:
         "channel_orders": orders,
         "layers": metrics,
         "layer_similarity": approximate_cka(tensors),
-        "kernels": kernel_diagnostics(model_path),
+        "kernels": kernels,
         "activation_motifs": {
             "status": "not_generated",
             "reason": "A genomic corpus and activation-window reservoir are required; one displayed locus is intentionally insufficient.",
