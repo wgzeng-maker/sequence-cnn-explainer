@@ -11,6 +11,7 @@ activations and diagnostics.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -245,6 +246,26 @@ def write_tensor(public_dir: Path, name: str, values: np.ndarray) -> dict[str, A
     }
 
 
+def write_weight_matrix(public_dir: Path, name: str, values: np.ndarray) -> dict[str, Any]:
+    """Write an exact row-major float32 matrix for progressive browser loading."""
+    public_dir.mkdir(parents=True, exist_ok=True)
+    matrix = np.asarray(values, dtype="<f4")
+    path = public_dir / f"{name}.f32.gz"
+    path.write_bytes(gzip.compress(matrix.tobytes(order="C"), compresslevel=9, mtime=0))
+    absolute = np.abs(matrix)
+    return {
+        "url": f"/data/basset/{name}.f32.gz",
+        "rows": int(matrix.shape[0]),
+        "columns": int(matrix.shape[1]),
+        "values": int(matrix.size),
+        "dtype": "float32-le",
+        "compression": "gzip",
+        "layout": "output_units_by_input_features",
+        "absolute_p995": float(np.quantile(absolute, .995)),
+        "absolute_maximum": float(absolute.max()),
+    }
+
+
 def layer_entry(name: str, values: np.ndarray, asset: dict[str, Any], receptive_field: int, jump: int) -> dict[str, Any]:
     return {
         "id": name,
@@ -312,6 +333,13 @@ def main() -> None:
     conv_modules = [modules[index] for index in (0, 4, 8)]
     bn_modules = [modules[index] for index in (1, 5, 9)]
     dense_modules = [modules[index] for index in (13, 17, 21)]
+    dense_bn_modules = [modules[index] for index in (14, 18)]
+    dense_weight_matrices = [obj_get(module, "weight") for module in dense_modules]
+    dense_weight_assets = {
+        "dense1": write_weight_matrix(args.public_dir, "dense1_weights", dense_weight_matrices[0]),
+        "dense2": write_weight_matrix(args.public_dir, "dense2_weights", dense_weight_matrices[1]),
+        "output": write_weight_matrix(args.public_dir, "output_weights", dense_weight_matrices[2]),
+    }
 
     conv1_strength = states["conv1_relu"].max(axis=1)
     selected_filters = np.argsort(conv1_strength)[-8:][::-1]
@@ -371,6 +399,10 @@ def main() -> None:
         "weight": float(dense1_weights.reshape(-1)[index]),
         "contribution": float(dense1_contributions.reshape(-1)[index]),
     } for index in top_dense_cells_flat]
+
+    dense2_unit = int(np.argmax(states["dense2_relu"]))
+    dense2_weights = dense_weight_matrices[1][dense2_unit]
+    dense2_contributions = dense2_weights * states["dense1_relu"]
 
     predictions = states["predictions"]
     top_predictions = np.argsort(predictions)[-15:][::-1]
@@ -454,9 +486,38 @@ def main() -> None:
             "after_batch_norm": float(states["dense1_bn"][dense1_unit]),
             "after_relu": float(states["dense1_relu"][dense1_unit]),
         },
+        "dense2_readout_example": {
+            "unit_zero_based": dense2_unit,
+            "input_shape": [1000],
+            "weights": jsonable(dense2_weights),
+            "input_activations": jsonable(states["dense1_relu"]),
+            "contributions": jsonable(dense2_contributions),
+            "sum_products": float(dense2_contributions.sum()),
+            "raw_bias": float(obj_get(dense_modules[1], "bias")[dense2_unit]),
+            "after_raw_bias": float(states["dense2_linear"][dense2_unit]),
+            "batch_norm": {
+                "running_mean": float(obj_get(dense_bn_modules[1], "running_mean")[dense2_unit]),
+                "running_inverse_std": float(obj_get(dense_bn_modules[1], "running_std")[dense2_unit]),
+                "gamma": float(obj_get(dense_bn_modules[1], "weight")[dense2_unit]),
+                "beta": float(obj_get(dense_bn_modules[1], "bias")[dense2_unit]),
+            },
+            "after_batch_norm": float(states["dense2_bn"][dense2_unit]),
+            "after_relu": float(states["dense2_relu"][dense2_unit]),
+        },
+        "dense_weight_assets": dense_weight_assets,
         "outputs": {
             "k562_index_zero_based": k562_index,
             "k562_probability": float(predictions[k562_index]),
+            "dense2_activations": jsonable(states["dense2_relu"]),
+            "output_biases": jsonable(obj_get(dense_modules[2], "bias")),
+            "k562_reader": {
+                "weights": jsonable(dense_weight_matrices[2][k562_index]),
+                "contributions": jsonable(dense_weight_matrices[2][k562_index] * states["dense2_relu"]),
+                "sum_products": float(np.sum(dense_weight_matrices[2][k562_index] * states["dense2_relu"])),
+                "bias": float(obj_get(dense_modules[2], "bias")[k562_index]),
+                "logit": float(states["dense3_linear"][k562_index]),
+                "probability": float(predictions[k562_index]),
+            },
             "top_predictions": [{
                 "target_index_zero_based": int(index),
                 "label": targets[index]["label"],

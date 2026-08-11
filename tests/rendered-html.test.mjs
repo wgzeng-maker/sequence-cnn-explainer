@@ -144,6 +144,7 @@ test("the page teaches one connected flow and avoids the discarded GC overview",
   assert.match(page, /THE LEARNED PROFILE KERNEL/);
   assert.match(page, /38,400 products \+ bias/);
   assert.match(page, /Profile convolution kernel heatmap, 512 channels by 75 relative positions/);
+  assert.match(page, /Coral cells are positive; blue cells are negative/);
   assert.match(page, /GM21515 ATAC checkpoint/);
   assert.match(page, /nextStage === "stem" \? \(computation === "output" \? "relu" : computation\) : layer === "stem" \? "output"/);
   assert.match(page, /type="number" min="1" max="512"/);
@@ -217,7 +218,24 @@ test("the audit page distinguishes description, mechanism, and biology", async (
   assert.match(page, /COUNT–PROFILE CHANNEL-WEIGHT CORRELATION/);
   assert.match(page, /Learned dense weights/);
   assert.match(page, /This locus: pooled activation × weight/);
-  assert.match(page, /previous per-card normalization made them look falsely identical/);
+  assert.match(page, /Signed profile-head kernel heatmap/);
+  assert.match(page, /512 learned feature channels/);
+  assert.match(page, /Collapsed positional energy/);
+  assert.match(page, /coral raises log-count · blue lowers it/);
+  assert.match(page, /one block = 100% weight energy/);
+  assert.match(page, /Every bar uses the full 0–100% width with no magnification/);
+  assert.doesNotMatch(page, /±2\.5 percentage-point scale/);
+});
+
+test("profile-head heatmaps preserve all 512 × 75 signed weights", async () => {
+  for (const [preset, publicName] of [["k562-peak", "k562_peak"], ["gm21515", "gm21515"]]) {
+    const demo = await loadDemo(preset);
+    const compressed = await readFile(new URL(`public/data/tensors/${publicName}/profile_kernel.f32.gz`, root));
+    const raw = gunzipSync(compressed);
+    assert.equal(raw.byteLength, 512 * 75 * 4);
+    assert.ok(Math.abs(raw.readFloatLE(0) - demo.head_demos.profile_weights_input_channels_by_positions[0][0]) < 1e-6);
+    assert.ok(Math.abs(raw.readFloatLE(raw.byteLength - 4) - demo.head_demos.profile_weights_input_channels_by_positions[511][74]) < 1e-6);
+  }
 });
 
 test("the Basset page keeps motif detection, pooling, channel mixing, and dense readout connected", async () => {
@@ -226,10 +244,16 @@ test("the Basset page keeps motif detection, pooling, channel mixing, and dense 
   assert.match(page, /no padding/i);
   assert.match(page, /MAX-POOL MICROSCOPE/);
   assert.match(page, /complete checkpoint graph/i);
+  assert.match(page, /coral positive · blue negative/);
   assert.match(page, /full tensors shrink/i);
   assert.match(page, /300 channels × 11 nearby positions/i);
   assert.match(page, /3,300 learned inputs/);
-  assert.match(page, /dense layer reads all 200 × 10 cells at once/i);
+  assert.match(page, /Two hidden dense layers turn spatial features into shared cell-type evidence/i);
+  assert.match(page, /Dense 1 weights/);
+  assert.match(page, /Dense 2 weights/);
+  assert.match(page, /Output-reader weights/);
+  assert.match(page, /This is technically a third linear layer, but not a hidden dense layer/);
+  assert.match(page, /Where is dropout/);
   assert.match(page, /ChromBPNet.*preserve a long spatial grid/s);
   assert.match(page, /not attribution scores for the final prediction/i);
 
@@ -241,4 +265,13 @@ test("the Basset page keeps motif detection, pooling, channel mixing, and dense 
     [4, 600], [300, 582], [300, 194], [200, 184], [200, 46],
     [200, 40], [200, 10], [2000], [1000], [1000], [164],
   ]);
+  assert.deepEqual(Object.fromEntries(Object.entries(data.dense_weight_assets).map(([name, asset]) => [name, [asset.rows, asset.columns]])), {
+    dense1: [1000, 2000], dense2: [1000, 1000], output: [164, 1000],
+  });
+  for (const asset of Object.values(data.dense_weight_assets)) {
+    const raw = gunzipSync(await readFile(new URL(`public${asset.url}`, root)));
+    assert.equal(raw.byteLength, asset.rows * asset.columns * 4);
+  }
+  assert.equal(data.dense2_readout_example.contributions.length, 1000);
+  assert.equal(data.outputs.k562_reader.contributions.length, 1000);
 });

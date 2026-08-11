@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -78,11 +79,39 @@ def main() -> None:
     close(dense["sum_products"] + dense["raw_bias"], dense["after_raw_bias"], 5e-6)
     close(max(0.0, dense["after_batch_norm"]), dense["after_relu"])
 
+    expected_weight_shapes = {"dense1": (1000, 2000), "dense2": (1000, 1000), "output": (164, 1000)}
+    for name, shape in expected_weight_shapes.items():
+        metadata = data["dense_weight_assets"][name]
+        assert (metadata["rows"], metadata["columns"]) == shape
+        asset = ROOT / "public" / metadata["url"].lstrip("/")
+        with gzip.open(asset, "rb") as handle:
+            values = np.frombuffer(handle.read(), dtype="<f4")
+        assert values.size == shape[0] * shape[1]
+
+    dense2 = data["dense2_readout_example"]
+    dense2_weights = np.asarray(dense2["weights"], dtype=float)
+    dense2_inputs = np.asarray(dense2["input_activations"], dtype=float)
+    dense2_contributions = np.asarray(dense2["contributions"], dtype=float)
+    assert dense2_weights.shape == dense2_inputs.shape == dense2_contributions.shape == (1000,)
+    assert np.max(np.abs(dense2_weights * dense2_inputs - dense2_contributions)) < 2e-6
+    close(float(dense2_contributions.sum()), dense2["sum_products"], 5e-5)
+    close(dense2["sum_products"] + dense2["raw_bias"], dense2["after_raw_bias"], 5e-6)
+    bn = dense2["batch_norm"]
+    normalized = (dense2["after_raw_bias"] - bn["running_mean"]) * bn["running_inverse_std"] * bn["gamma"] + bn["beta"]
+    close(normalized, dense2["after_batch_norm"], 5e-6)
+    close(max(0.0, normalized), dense2["after_relu"], 5e-6)
+
     outputs = data["outputs"]
     assert len(outputs["all_labels"]) == 164
     assert outputs["all_labels"][outputs["k562_index_zero_based"]] == "K562"
     assert 0 <= outputs["k562_probability"] <= 1
     assert all(0 <= item["probability"] <= 1 for item in outputs["top_predictions"])
+    reader = outputs["k562_reader"]
+    reader_contributions = np.asarray(reader["contributions"], dtype=float)
+    assert reader_contributions.shape == (1000,)
+    close(float(reader_contributions.sum()), reader["sum_products"], 5e-5)
+    close(reader["sum_products"] + reader["bias"], reader["logit"], 5e-6)
+    close(1.0 / (1.0 + np.exp(-reader["logit"])), reader["probability"], 5e-7)
     print("Basset adapter verification passed")
 
 

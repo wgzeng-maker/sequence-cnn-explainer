@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import auditArtifact from "../data/model-audit-summary.json";
 import { CHANNEL_ORDER_LABELS, type ChannelOrder } from "../model-analysis";
+import { loadFloat32Tensor } from "../tensor-loader";
 import styles from "./page.module.css";
 
 type LayerName = "stem" | "res1" | "res2" | "res3" | "res4" | "res5" | "res6" | "res7" | "res8";
@@ -28,6 +29,10 @@ type Artifact = { schema_version: string; evidence_levels: Array<{ id: string; l
 const audit = auditArtifact as unknown as Artifact;
 const LAYERS: LayerName[] = ["stem", "res1", "res2", "res3", "res4", "res5", "res6", "res7", "res8"];
 const ORDER_KEYS = Object.keys(CHANNEL_ORDER_LABELS) as ChannelOrder[];
+const PROFILE_KERNEL_URLS: Record<string, string> = {
+  "k562-peak": "/data/tensors/k562_peak/profile_kernel.f32.gz",
+  gm21515: "/data/tensors/gm21515/profile_kernel.f32.gz",
+};
 const css = (values: Record<string, string | number>) => values as CSSProperties;
 const percent = (value: number) => `${(value * 100).toFixed(2)}%`;
 const format = (value: number) => value === 0 ? "0" : Math.abs(value) < .001 ? value.toExponential(2) : value.toFixed(4);
@@ -48,14 +53,12 @@ function QuantileChart({ values }: { values: number[] }) {
 
 function TapEnergyChart({ values }: { values: number[] }) {
   const labels = ["left", "center", "right"];
-  const equal = 1 / 3;
-  const limit = .025;
   return <div className={styles.tapEnergy}>
-    <div className={styles.tapScale}><span>+2.5 pp</span><i /><span>equal 33.3%</span><i /><span>−2.5 pp</span></div>
-    <div className={styles.tapColumns}>{values.map((value, index) => {
-      const delta = value - equal;
-      return <div key={labels[index]}><span>{labels[index]} tap</span><i className={delta >= 0 ? styles.tapPositive : styles.tapNegative} style={css({ "--delta": Math.min(Math.abs(delta) / limit, 1), "--direction": delta >= 0 ? -1 : 1 })} /><b>{(value * 100).toFixed(2)}%</b><small>{delta >= 0 ? "+" : ""}{(delta * 100).toFixed(2)} pp</small></div>;
-    })}</div>
+    <small className={styles.tapTotal}>one block = 100% weight energy</small>
+    <div className={styles.tapStack} role="img" aria-label={labels.map((label, index) => `${label} tap ${(values[index] * 100).toFixed(2)} percent`).join(", ")}>
+      {values.map((value, index) => <i key={labels[index]} title={`${labels[index]} tap: ${(value * 100).toFixed(2)}%`} style={{ width: `${value * 100}%` }} />)}
+    </div>
+    <div className={styles.tapLegend}>{values.map((value, index) => <div key={labels[index]}><i /><span>{labels[index]} tap</span><b>{(value * 100).toFixed(2)}%</b></div>)}</div>
   </div>;
 }
 
@@ -64,6 +67,85 @@ function ProfileEnergyChart({ values }: { values: number[] }) {
   return <div className={styles.profileEnergy}>
     <div>{values.map((value, index) => <i key={index} title={`kernel position ${index}: energy ${format(value)}`} style={{ height: `${Math.max(2, value / maximum * 92)}%` }} />)}</div>
     <footer><span>position 0</span><b>energy = sum of squared weights over 512 channels</b><span>position 74</span></footer>
+  </div>;
+}
+
+function profileWeightRgb(value: number, scale: number) {
+  const background = [247, 244, 236];
+  const target = value >= 0 ? [232, 100, 75] : [50, 136, 163];
+  const level = Math.min(Math.abs(value) / Math.max(scale, 1e-12), 1);
+  return background.map((start, index) => Math.round(start + (target[index] - start) * level));
+}
+
+function ProfileKernelHeatmap({ preset, order }: { preset: string; order: number[] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [weights, setWeights] = useState<Float32Array | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [gain, setGain] = useState(1.8);
+  const [cursor, setCursor] = useState({ displayRow: 255, position: 37 });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setWeights(null);
+    setError(null);
+    loadFloat32Tensor(PROFILE_KERNEL_URLS[preset], 512 * 75, controller.signal).then(setWeights).catch(reason => {
+      if (reason?.name !== "AbortError") setError(reason instanceof Error ? reason.message : String(reason));
+    });
+    return () => controller.abort();
+  }, [preset]);
+
+  const robustMaximum = useMemo(() => {
+    if (!weights) return 1;
+    const absolute = Array.from(weights, Math.abs).sort((a, b) => a - b);
+    return absolute[Math.floor(absolute.length * .995)] || absolute.at(-1) || 1;
+  }, [weights]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !weights) return;
+    canvas.width = 75;
+    canvas.height = 512;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const image = context.createImageData(75, 512);
+    for (let displayRow = 0; displayRow < 512; displayRow += 1) {
+      const channel = order[displayRow];
+      for (let position = 0; position < 75; position += 1) {
+        const value = weights[channel * 75 + position];
+        const [red, green, blue] = profileWeightRgb(value, robustMaximum / gain);
+        const pixel = (displayRow * 75 + position) * 4;
+        image.data[pixel] = red;
+        image.data[pixel + 1] = green;
+        image.data[pixel + 2] = blue;
+        image.data[pixel + 3] = 255;
+      }
+    }
+    context.putImageData(image, 0, 0);
+  }, [weights, order, robustMaximum, gain]);
+
+  const moveCursor = (clientX: number, clientY: number, target: HTMLCanvasElement) => {
+    const bounds = target.getBoundingClientRect();
+    setCursor({
+      position: Math.max(0, Math.min(74, Math.floor((clientX - bounds.left) / bounds.width * 75))),
+      displayRow: Math.max(0, Math.min(511, Math.floor((clientY - bounds.top) / bounds.height * 512))),
+    });
+  };
+  const channel = order[cursor.displayRow];
+  const selectedWeight = weights?.[channel * 75 + cursor.position];
+
+  return <div className={styles.profileKernelHeatmap}>
+    <div className={styles.profileKernelYAxis}><span>rank 1 · Ch {order[0] + 1}</span><b>512 learned feature channels</b><span>rank 512 · Ch {order[511] + 1}</span></div>
+    <div className={styles.profileKernelCanvas}>
+      {error ? <p>{error}</p> : !weights ? <p>Loading exact profile weights…</p> : null}
+      <canvas ref={canvasRef} aria-label="Signed profile-head kernel heatmap with 512 channels and 75 relative positions" onPointerMove={event => moveCursor(event.clientX, event.clientY, event.currentTarget)} />
+      <i style={{ left: `${cursor.position / 75 * 100}%`, top: `${cursor.displayRow / 512 * 100}%`, width: `${100 / 75}%`, height: `${100 / 512}%` }} />
+    </div>
+    <div className={styles.profileKernelXAxis}><span>relative position 1</span><b>75 kernel positions</b><span>relative position 75</span></div>
+    <div className={styles.profileKernelControls}>
+      <label><span>Weight contrast · {gain.toFixed(1)}×</span><input type="range" min=".5" max="5" step=".1" value={gain} onChange={event => setGain(Number(event.target.value))} /></label>
+      <div><span>Selected cell</span><b>rank {cursor.displayRow + 1} · Channel {channel + 1} · relative position {cursor.position + 1}</b><strong>{selectedWeight === undefined ? "—" : selectedWeight.toFixed(5)}</strong></div>
+      <div className={styles.profileKernelLegend}><i /><span>negative weight</span><i /><span>zero</span><i /><span>positive weight</span></div>
+    </div>
   </div>;
 }
 
@@ -140,16 +222,16 @@ export default function ModelAuditPage() {
     <section className={styles.section}>
       <div className={styles.panelHeading}><div><small>KERNEL DIAGNOSTICS</small><h2>Do dilated kernels really mix channels?</h2></div><span>complete 3 × 512 × 512 kernels</span></div>
       <div className={styles.residualCards}>{residual.map(block => <article key={block.block}><header><b>Block {block.block}</b><span>d={block.dilation}</span></header><TapEnergyChart values={block.tap_energy_fraction} /><dl><dt>diagonal energy</dt><dd>{percent(block.diagonal_energy_fraction)}</dd><dt>effective input channels · median</dt><dd>{block.effective_input_channels_quantiles[3].toFixed(1)}</dd><dt>left/right cosine</dt><dd>{block.left_right_tap_cosine.toFixed(3)}</dd><dt>stable / effective rank</dt><dd>{block.stable_rank.toFixed(1)} / {block.effective_rank.toFixed(1)}</dd></dl></article>)}</div>
-      <p className={styles.takeaway}><b>Reading this:</b> each block’s three fractions sum to 100%. They genuinely are close to one-third; the previous per-card normalization made them look falsely identical. The new shared ±2.5 percentage-point scale exposes the differences. Weight energy measures squared weight magnitude—not activation or causal importance.</p>
+      <p className={styles.takeaway}><b>Surprising result:</b> in every block, left, center, and right taps each carry close to one-third of the kernel’s total squared-weight energy. Every bar uses the full 0–100% width with no magnification, so the nearly equal thirds are the visual message. The printed percentages preserve the small differences. Weight energy measures squared weight magnitude—not activation or causal importance.</p>
     </section>
 
     <SimilarityMatrix checkpoint={checkpoint} />
 
     <section className={styles.section}>
       <div className={styles.panelHeading}><div><small>HEAD DIAGNOSTICS</small><h2>How the final feature tensor is read</h2></div><span>profile and count remain separate readers</span></div>
-      <div className={styles.headGrid}><article><small>PROFILE KERNEL</small><b>75 × 512 × 1</b><span>effective input channels: {checkpoint.kernels.heads.profile_effective_input_channels.toFixed(1)}</span><span>positional energy center: {checkpoint.kernels.heads.profile_position_center_of_mass.toFixed(2)} / 74</span><ProfileEnergyChart values={checkpoint.kernels.heads.profile_position_energy} /></article><article><small>COUNT–PROFILE CHANNEL-WEIGHT CORRELATION</small><CorrelationRuler value={checkpoint.kernels.heads.count_profile_absolute_weight_correlation} /><span>Pearson correlation across 512 channels: |count dense weight| versus √(profile weight energy). This is not prediction agreement, accuracy, or biological agreement.</span></article></div>
+      <div className={styles.headGrid}><article><small>PROFILE KERNEL</small><b>75 × 512 × 1</b><span>Every pixel below is one signed weight connecting a final feature channel at one relative position to one profile logit. The selected global channel order is retained vertically.</span><div className={styles.profileDiagnosticGrid}><ProfileKernelHeatmap preset={preset} order={order} /><div className={styles.profileEnergySummary}><b>Collapsed positional energy</b><span>At each relative position, square and sum all 512 channel weights. This summary hides sign and channel identity; the heatmap preserves both.</span><span>effective input channels: {checkpoint.kernels.heads.profile_effective_input_channels.toFixed(1)}</span><span>energy center: {checkpoint.kernels.heads.profile_position_center_of_mass.toFixed(2)} / 74</span><ProfileEnergyChart values={checkpoint.kernels.heads.profile_position_energy} /></div></div></article><article><small>COUNT–PROFILE CHANNEL-WEIGHT CORRELATION</small><CorrelationRuler value={checkpoint.kernels.heads.count_profile_absolute_weight_correlation} /><span>Pearson correlation across 512 channels: |count dense weight| versus √(profile weight energy). This is not prediction agreement, accuracy, or biological agreement.</span></article></div>
       <div className={styles.countDense}><div className={styles.countFlow}><span><small>FINAL TENSOR</small><b>512 × 1,074</b></span><i>mean each channel<br />across positions →</i><span><small>POOLED FEATURES</small><b>512 numbers</b></span><i>× 512 dense weights<br />and sum →</i><span><small>LOG-COUNT</small><b>{checkpoint.kernels.heads.logcount.toFixed(3)}</b></span><i>exp(x) − 1 →</i><span className={styles.countResult}><small>PREDICTED TOTAL</small><b>{checkpoint.kernels.heads.predicted_total_count.toFixed(1)}</b></span></div>
-        <div className={styles.denseChart}><header><b>Learned dense weights</b><span>blue raises log-count · coral lowers it</span></header><SignedStrip values={checkpoint.channel_registry.map(row => row.count_weight)} order={order} label="Count dense weights by channel" /></div>
+        <div className={styles.denseChart}><header><b>Learned dense weights</b><span>coral raises log-count · blue lowers it</span></header><SignedStrip values={checkpoint.channel_registry.map(row => row.count_weight)} order={order} label="Count dense weights by channel" /></div>
         <div className={styles.denseChart}><header><b>This locus: pooled activation × weight</b><span>same global channel order · signed contribution before bias</span></header><SignedStrip values={checkpoint.channel_registry.map(row => row.count_contribution)} order={order} label="Count contributions by channel" /></div>
         <p className={styles.denseEquation}>Σ 512 channel contributions <b>{(checkpoint.kernels.heads.logcount - checkpoint.kernels.heads.count_bias).toFixed(3)}</b> + dense bias <b>{checkpoint.kernels.heads.count_bias.toFixed(3)}</b> = log-count <b>{checkpoint.kernels.heads.logcount.toFixed(3)}</b>.</p>
       </div>

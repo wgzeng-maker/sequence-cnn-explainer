@@ -10,6 +10,7 @@ const BASES = ["A", "C", "G", "T"] as const;
 const BASE_COLORS = ["#e96b54", "#4f97b2", "#e5b33f", "#72a17e"];
 
 type Asset = { url: string; channels: number; positions: number; values: number; minimum: number; maximum: number };
+type WeightAsset = { url: string; rows: number; columns: number; values: number; absolute_p995: number; absolute_maximum: number };
 type Layer = (typeof artifact.layers)[number];
 type StemFilter = (typeof artifact.stem_filters)[number];
 
@@ -29,11 +30,11 @@ function activationColor(level: number) {
 function signedColor(value: number, maximum: number) {
   const strength = Math.sqrt(clamp(Math.abs(value) / Math.max(maximum, 1e-12), 0, 1));
   const paper = [249, 246, 238];
-  const target = value >= 0 ? [45, 136, 166] : [231, 95, 72];
+  const target = value >= 0 ? [231, 95, 72] : [45, 136, 166];
   return `rgb(${paper.map((start, index) => Math.round(start + (target[index] - start) * strength)).join(" ")})`;
 }
 
-function useTensor(asset: Asset) {
+function useTensor(asset: { url: string; values: number }) {
   const [loaded, setLoaded] = useState<{ url: string; values: Float32Array } | null>(null);
   const [failure, setFailure] = useState<{ url: string; message: string } | null>(null);
   useEffect(() => {
@@ -47,6 +48,13 @@ function useTensor(asset: Asset) {
     return () => controller.abort();
   }, [asset.url, asset.values]);
   return { values: loaded?.url === asset.url ? loaded.values : null, error: failure?.url === asset.url ? failure.message : null };
+}
+
+function signedRgb(value: number, maximum: number) {
+  const strength = Math.sqrt(clamp(Math.abs(value) / Math.max(maximum, 1e-12), 0, 1));
+  const paper = [249, 246, 238];
+  const target = value >= 0 ? [231, 95, 72] : [45, 136, 166];
+  return paper.map((start, index) => Math.round(start + (target[index] - start) * strength));
 }
 
 function SectionHeading({ number, eyebrow, title, children }: { number: string; eyebrow: string; title: string; children: React.ReactNode }) {
@@ -205,6 +213,81 @@ function ContributionCanvas({ values, rows, columns, selectedRows }: { values: n
   return <div className={styles.contributionShell}><canvas ref={ref} />{selectedRows?.map(row => <i key={row} style={{ top: `${row / rows * 100}%`, height: `${100 / rows}%` }} />)}</div>;
 }
 
+function WeightMatrixOverview({ asset, name, inputLabel, outputLabel, selectedRow }: { asset: WeightAsset; name: string; inputLabel: string; outputLabel: string; selectedRow: number }) {
+  const { values, error } = useTensor(asset);
+  const ref = useRef<HTMLCanvasElement>(null);
+  const [contrast, setContrast] = useState(1.5);
+  const [cursor, setCursor] = useState({ row: selectedRow, column: Math.floor(asset.columns / 2) });
+  useEffect(() => setCursor(current => ({ ...current, row: selectedRow })), [selectedRow]);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || !values) return;
+    canvas.width = asset.columns;
+    canvas.height = asset.rows;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    const image = context.createImageData(asset.columns, asset.rows);
+    const scale = asset.absolute_p995 / contrast;
+    for (let index = 0; index < values.length; index += 1) {
+      const [red, green, blue] = signedRgb(values[index], scale);
+      const pixel = index * 4;
+      image.data[pixel] = red;
+      image.data[pixel + 1] = green;
+      image.data[pixel + 2] = blue;
+      image.data[pixel + 3] = 255;
+    }
+    context.putImageData(image, 0, 0);
+  }, [values, asset, contrast]);
+  const inspect = (clientX: number, clientY: number, canvas: HTMLCanvasElement) => {
+    const bounds = canvas.getBoundingClientRect();
+    setCursor({
+      row: clamp(Math.floor((clientY - bounds.top) / bounds.height * asset.rows), 0, asset.rows - 1),
+      column: clamp(Math.floor((clientX - bounds.left) / bounds.width * asset.columns), 0, asset.columns - 1),
+    });
+  };
+  const selectedWeight = values?.[cursor.row * asset.columns + cursor.column];
+  return <div className={styles.weightMatrixCard}>
+    <header><div><small>COMPLETE LEARNED MATRIX</small><b>{name} · {asset.rows.toLocaleString()} × {asset.columns.toLocaleString()}</b></div><span>coral positive · blue negative</span></header>
+    <div className={styles.weightMatrixShell}>
+      {error ? <p>{error}</p> : !values ? <p>Loading exact checkpoint weights…</p> : null}
+      <canvas ref={ref} aria-label={`${name} signed weight matrix, ${asset.rows} output rows by ${asset.columns} input columns`} onPointerMove={event => inspect(event.clientX, event.clientY, event.currentTarget)} />
+      <i style={{ top: `${selectedRow / asset.rows * 100}%`, height: `${100 / asset.rows}%` }} />
+      <b style={{ left: `${cursor.column / asset.columns * 100}%`, top: `${cursor.row / asset.rows * 100}%`, width: `${100 / asset.columns}%`, height: `${100 / asset.rows}%` }} />
+    </div>
+    <div className={styles.weightMatrixAxes}><span>{outputLabel} 1</span><b>{outputLabel}s ↓ · {inputLabel}s →</b><span>{outputLabel} {asset.rows.toLocaleString()}</span></div>
+    <div className={styles.weightMatrixControls}><label><span>Weight contrast · {contrast.toFixed(1)}×</span><input type="range" min=".5" max="5" step=".1" value={contrast} onChange={event => setContrast(Number(event.target.value))} /></label><div><span>pointer</span><b>{outputLabel} {cursor.row + 1} × {inputLabel} {cursor.column + 1}</b><strong>{selectedWeight === undefined ? "—" : selectedWeight.toFixed(5)}</strong></div><div><span>gold horizontal line</span><b>the row expanded immediately below</b><strong>{outputLabel} {selectedRow + 1}</strong></div></div>
+  </div>;
+}
+
+function SignedContributionStrip({ values, label }: { values: number[]; label: string }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const maximum = useMemo(() => Math.max(...values.map(Math.abs), 1e-12), [values]);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    canvas.width = values.length;
+    canvas.height = 1;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    const image = context.createImageData(values.length, 1);
+    values.forEach((value, index) => {
+      const [red, green, blue] = signedRgb(value, maximum);
+      const pixel = index * 4;
+      image.data[pixel] = red;
+      image.data[pixel + 1] = green;
+      image.data[pixel + 2] = blue;
+      image.data[pixel + 3] = 255;
+    });
+    context.putImageData(image, 0, 0);
+  }, [values, maximum]);
+  const strongest = useMemo(() => values.map((value, index) => ({ value, index })).sort((left, right) => Math.abs(right.value) - Math.abs(left.value)).slice(0, 8), [values]);
+  return <div className={styles.signedContribution}>
+    <canvas ref={ref} aria-label={label} />
+    <div className={styles.axis}><span>input 1</span><span>blue negative · coral positive</span><span>input {values.length.toLocaleString()}</span></div>
+    <div className={styles.strongestContributions}>{strongest.map(item => <span key={item.index}><b>#{item.index + 1}</b><i style={{ width: `${Math.abs(item.value) / maximum * 100}%`, background: item.value >= 0 ? "#e8644b" : "#3288a3" }} /><strong>{item.value >= 0 ? "+" : ""}{item.value.toFixed(3)}</strong></span>)}</div>
+  </div>;
+}
+
 function ArchitectureMap() {
   const widths = artifact.architecture.map(stage => stage.shape.length > 1 ? stage.shape.at(-1) ?? 1 : 600);
   return <div className={styles.architectureMap}>
@@ -243,6 +326,8 @@ export default function BassetPage() {
 
   const mixing = artifact.conv2_mixing_example;
   const dense = artifact.dense_readout_example;
+  const dense2 = artifact.dense2_readout_example;
+  const k562Reader = artifact.outputs.k562_reader;
   const topMixRows = mixing.top_input_channels.map(item => item.channel_zero_based);
 
   return <main className={styles.page}>
@@ -266,7 +351,7 @@ export default function BassetPage() {
       <div className={styles.controls}><label><span>Stem filter</span><select value={filterIndex} onChange={event => { const next = Number(event.target.value); setFilterIndex(next); setKernelPosition(artifact.stem_filters[next].peak_position_zero_based); }}>{artifact.stem_filters.map((item, index) => <option key={item.filter_id_zero_based} value={index}>Channel {item.filter_id_zero_based + 1} · peak {item.peak_activation.toFixed(2)}</option>)}</select></label><label><span>Kernel start · input base {kernelPosition + 1}</span><input type="range" min="0" max="581" value={kernelPosition} onChange={event => setKernelPosition(Number(event.target.value))} /></label></div>
       <SequenceRibbon sequence={artifact.sequence} start={kernelPosition} width={19} onSelect={setKernelPosition} />
       <div className={styles.stemGrid}>
-        <article><div className={styles.cardTitle}><small>LEARNED QUESTION</small><h3>Filter Channel {filter.filter_id_zero_based + 1} · 4 × 19</h3><span>blue positive · coral negative</span></div><KernelMatrix weights={filter.weights_bases_by_positions} sequence={artifact.sequence} start={kernelPosition} /></article>
+        <article><div className={styles.cardTitle}><small>LEARNED QUESTION</small><h3>Filter Channel {filter.filter_id_zero_based + 1} · 4 × 19</h3><span>coral positive · blue negative</span></div><KernelMatrix weights={filter.weights_bases_by_positions} sequence={artifact.sequence} start={kernelPosition} /></article>
         <article><div className={styles.cardTitle}><small>ONE OUTPUT CELL</small><h3>Convolution at position {kernelPosition + 1}</h3><span>cross-correlation: no reversal</span></div><div className={styles.productRow}>{selectedWeights.map((value, index) => <i key={index} style={{ background: signedColor(value, Math.max(...selectedWeights.map(Math.abs))) }}>{value.toFixed(2)}</i>)}</div><div className={styles.equation}><span><small>sum products</small><b>{dotProduct.toFixed(3)}</b></span><i>+</i><span><small>conv bias</small><b>{filter.raw_bias.toFixed(3)}</b></span><i>→</i><span><small>batch norm</small><b>{afterBatchNorm.toFixed(3)}</b></span><i>→</i><strong><small>ReLU</small>{afterRelu.toFixed(3)}</strong></div></article>
       </div>
       <div className={styles.trackPair}>
@@ -289,8 +374,8 @@ export default function BassetPage() {
     <section id="mixing" className={styles.section}>
       <SectionHeading number="4" eyebrow="HOW LOCAL FEATURES COMMUNICATE" title="A second-layer filter reads 300 channels × 11 nearby positions">This is not one one-dimensional vector acting independently on each channel. One Conv2 output cell combines <b>3,300 learned inputs</b>: 300 Conv1 feature channels across 11 pooled locations.</SectionHeading>
       <div className={styles.mixingLayout}>
-        <article><div className={styles.cardTitle}><small>ELEMENT PRODUCTS</small><h3>Conv2 Channel {mixing.output_channel_zero_based + 1} · output position {mixing.output_position_zero_based + 1}</h3><span>rows = Conv1 channels · columns = 11 pooled locations</span></div><ContributionCanvas values={mixing.contributions_input_channels_by_taps} rows={300} columns={11} selectedRows={topMixRows} /><div className={styles.axis}><span>Conv1 Channel 1</span><span>coral negative · blue positive</span><span>Conv1 Channel 300</span></div></article>
-        <aside><small>THE 12 LARGEST CHANNEL CONTRIBUTIONS</small><div className={styles.contributionList}>{mixing.top_input_channels.map(item => <div key={item.channel_zero_based}><b>Channel {item.channel_zero_based + 1}</b><i style={{ width: `${Math.abs(item.signed_contribution) / Math.max(...mixing.top_input_channels.map(value => Math.abs(value.signed_contribution))) * 100}%`, background: item.signed_contribution >= 0 ? "#3288a3" : "#e8644b" }} /><span>{item.signed_contribution.toFixed(3)}</span></div>)}</div><p>These signed values already include both the incoming activation and the learned Conv2 weight. They are contributions to this one output cell, not attribution scores for the final prediction.</p></aside>
+        <article><div className={styles.cardTitle}><small>ELEMENT PRODUCTS</small><h3>Conv2 Channel {mixing.output_channel_zero_based + 1} · output position {mixing.output_position_zero_based + 1}</h3><span>rows = Conv1 channels · columns = 11 pooled locations</span></div><ContributionCanvas values={mixing.contributions_input_channels_by_taps} rows={300} columns={11} selectedRows={topMixRows} /><div className={styles.axis}><span>Conv1 Channel 1</span><span>blue negative · coral positive</span><span>Conv1 Channel 300</span></div></article>
+        <aside><small>THE 12 LARGEST CHANNEL CONTRIBUTIONS</small><div className={styles.contributionList}>{mixing.top_input_channels.map(item => <div key={item.channel_zero_based}><b>Channel {item.channel_zero_based + 1}</b><i style={{ width: `${Math.abs(item.signed_contribution) / Math.max(...mixing.top_input_channels.map(value => Math.abs(value.signed_contribution))) * 100}%`, background: item.signed_contribution >= 0 ? "#e8644b" : "#3288a3" }} /><span>{item.signed_contribution.toFixed(3)}</span></div>)}</div><p>These signed values already include both the incoming activation and the learned Conv2 weight. They are contributions to this one output cell, not attribution scores for the final prediction.</p></aside>
       </div>
       <div className={styles.equationWide}><span><small>3,300 products summed</small><b>{mixing.sum_products.toFixed(3)}</b></span><i>+</i><span><small>raw bias</small><b>{mixing.raw_bias.toFixed(3)}</b></span><i>→</i><span><small>batch norm</small><b>{mixing.after_batch_norm.toFixed(3)}</b></span><i>→</i><strong><small>ReLU</small>{mixing.after_relu.toFixed(3)}</strong></div>
       <div className={styles.takeaway}><b>Biological intuition:</b> if different Conv1 channels detect motif-like patterns, Conv2 can learn combinations of those channels within a 51 bp receptive field. Max pooling makes the combination somewhat tolerant to small shifts.</div>
@@ -305,12 +390,25 @@ export default function BassetPage() {
     </section>
 
     <section id="dense" className={styles.section}>
-      <SectionHeading number="6" eyebrow="GLOBAL COMMUNICATION" title="The dense layer reads all 200 × 10 cells at once">This is where any remaining location can directly influence the same hidden unit. Flattening preserves every Channel × Position identity; it does not average them.</SectionHeading>
+      <SectionHeading number="6" eyebrow="GLOBAL COMMUNICATION" title="Two hidden dense layers turn spatial features into shared cell-type evidence">Dense 1 reads all remaining Channel × Position cells. Dense 2 recombines those first hidden mixtures. ReLU between them makes this a genuinely nonlinear two-stage calculation, rather than two matrices that could be collapsed into one.</SectionHeading>
+      <div className={styles.flowSentence}><b>200 × 10</b><i>flatten</i><b>2,000</b><i>Dense 1 + BN + ReLU</i><b>1,000</b><i>Dense 2 + BN + ReLU</i><b>1,000</b><i>164 linear + sigmoid readers</i><b>164 probabilities</b></div>
+
+      <div className={styles.denseStageHeading}><small>DENSE 1 · GLOBAL SPATIAL MIXING</small><h3>Every one of 1,000 units reads all 2,000 Pool-3 cells</h3><p>The complete matrix has one row per Dense-1 output unit and one column per flattened Channel × Position input. The gold row is expanded into its original 200 × 10 geometry below.</p></div>
+      <WeightMatrixOverview asset={artifact.dense_weight_assets.dense1 as WeightAsset} name="Dense 1 weights" inputLabel="flattened feature" outputLabel="Dense-1 unit" selectedRow={dense.unit_zero_based} />
       <div className={styles.denseLayout}>
         <article><div className={styles.cardTitle}><small>ONE DENSE-1 UNIT</small><h3>Unit {dense.unit_zero_based + 1} · 200 × 10 contributions</h3><span>rows = Pool3 channels · columns = the ten broad locations</span></div><ContributionCanvas values={dense.contributions_channels_by_positions} rows={200} columns={10} /><div className={styles.axis}><span>Channel 1</span><span>each column covers 168 bp; centers 48 bp apart</span><span>Channel 200</span></div></article>
         <aside><small>WHAT “FULLY CONNECTED” MEANS HERE</small><b>2,000 → 1</b><p>One dense unit owns 2,000 separate weights. It can give different importance to the same feature channel at the left, center, or right of the 600 bp sequence.</p><dl><dt>sum products</dt><dd>{dense.sum_products.toFixed(3)}</dd><dt>raw bias</dt><dd>{dense.raw_bias.toFixed(3)}</dd><dt>after batch norm</dt><dd>{dense.after_batch_norm.toFixed(3)}</dd><dt>after ReLU</dt><dd>{dense.after_relu.toFixed(3)}</dd></dl></aside>
       </div>
-      <div className={styles.flowSentence}><b>200 × 10</b><i>flatten</i><b>2,000</b><i>dense + BN + ReLU</i><b>1,000</b><i>dense + BN + ReLU</i><b>1,000</b><i>164 sigmoid readers</i><b>164 probabilities</b></div>
+
+      <div className={styles.denseStageHeading}><small>DENSE 2 · MIXTURES OF MIXTURES</small><h3>Each second-layer unit recombines all 1,000 Dense-1 activations</h3><p>Dense 1 removed the explicit channel-by-position grid. Dense 2 therefore operates on learned global mixtures, not directly on DNA positions. The selected unit below has one separate weight for every Dense-1 unit.</p></div>
+      <WeightMatrixOverview asset={artifact.dense_weight_assets.dense2 as WeightAsset} name="Dense 2 weights" inputLabel="Dense-1 unit" outputLabel="Dense-2 unit" selectedRow={dense2.unit_zero_based} />
+      <div className={styles.readoutDetail}><article><div className={styles.cardTitle}><small>ONE DENSE-2 UNIT</small><h3>Unit {dense2.unit_zero_based + 1} · 1,000 signed contributions</h3><span>Dense-1 activation × matching Dense-2 weight</span></div><SignedContributionStrip values={dense2.contributions} label={`Contributions from 1,000 Dense-1 units to Dense-2 unit ${dense2.unit_zero_based + 1}`} /></article><aside><small>EXACT CHECKPOINT CALCULATION</small><dl><dt>sum 1,000 products</dt><dd>{dense2.sum_products.toFixed(3)}</dd><dt>raw bias</dt><dd>{dense2.raw_bias.toFixed(3)}</dd><dt>before batch norm</dt><dd>{dense2.after_raw_bias.toFixed(3)}</dd><dt>after batch norm</dt><dd>{dense2.after_batch_norm.toFixed(3)}</dd><dt>after ReLU</dt><dd>{dense2.after_relu.toFixed(3)}</dd></dl></aside></div>
+
+      <div className={styles.denseStageHeading}><small>OUTPUT · 164 CELL-TYPE READERS</small><h3>The final linear layer asks a different question for every cell type</h3><p>This is technically a third linear layer, but not a hidden dense layer: its 164 outputs are named predictions. The selected K562 row reads the same 1,000 Dense-2 activations as every other cell-type row, using its own weights and bias.</p></div>
+      <WeightMatrixOverview asset={artifact.dense_weight_assets.output as WeightAsset} name="Output-reader weights" inputLabel="Dense-2 unit" outputLabel="cell-type reader" selectedRow={artifact.outputs.k562_index_zero_based} />
+      <div className={styles.readoutDetail}><article><div className={styles.cardTitle}><small>ONE OUTPUT READER</small><h3>K562 · 1,000 signed contributions</h3><span>Dense-2 activation × K562 reader weight</span></div><SignedContributionStrip values={k562Reader.contributions} label="Contributions from 1,000 Dense-2 units to the K562 output reader" /></article><aside><small>LOGIT → PROBABILITY</small><dl><dt>sum 1,000 products</dt><dd>{k562Reader.sum_products.toFixed(3)}</dd><dt>output bias</dt><dd>{k562Reader.bias.toFixed(3)}</dd><dt>K562 logit</dt><dd>{k562Reader.logit.toFixed(3)}</dd><dt>sigmoid probability</dt><dd>{k562Reader.probability.toFixed(3)}</dd></dl></aside></div>
+
+      <div className={styles.dropoutNote}><b>Where is dropout?</b><span>The checkpoint contains dropout after Dense 1 and Dense 2. It randomly removes hidden activations only during training. In this evaluation-mode explainer it is exactly the identity operation, so no values are removed.</span></div>
       <div className={styles.outputs}><div><small>OFFICIAL HOXA TUTORIAL SEQUENCE</small><h3>Highest predicted accessibility probabilities</h3><p>These are model outputs for one sequence, not experimental measurements.</p></div><div className={styles.outputBars}>{artifact.outputs.top_predictions.slice(0, 12).map(item => <div key={item.target_index_zero_based} className={item.label === "K562" ? styles.k562 : ""}><b>{item.label}</b><i style={{ width: `${item.probability * 100}%` }} /><span>{item.probability.toFixed(3)}</span></div>)}</div><aside><small>K562</small><strong>{artifact.outputs.k562_probability.toFixed(3)}</strong><span>target #{artifact.outputs.k562_index_zero_based + 1}</span></aside></div>
     </section>
 

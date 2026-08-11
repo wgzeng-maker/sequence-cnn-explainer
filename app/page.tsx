@@ -65,7 +65,7 @@ function heatColor(level: number) {
 
 function signedColor(value: number, maximum: number) {
   const strength = Math.sqrt(clamp(Math.abs(value) / Math.max(maximum, 1e-12), 0, 1));
-  const target = value >= 0 ? [44, 129, 158] : [225, 91, 69];
+  const target = value >= 0 ? [225, 91, 69] : [44, 129, 158];
   const background = [247, 244, 236];
   const color = background.map((base, index) => Math.round(base + (target[index] - base) * strength));
   return `rgb(${color.join(" ")})`;
@@ -73,7 +73,7 @@ function signedColor(value: number, maximum: number) {
 
 function signedRgb(value: number, maximum: number) {
   const strength = Math.sqrt(clamp(Math.abs(value) / Math.max(maximum, 1e-12), 0, 1));
-  const target = value >= 0 ? [44, 129, 158] : [225, 91, 69];
+  const target = value >= 0 ? [225, 91, 69] : [44, 129, 158];
   const background = [247, 244, 236];
   return background.map((base, index) => Math.round(base + (target[index] - base) * strength));
 }
@@ -312,7 +312,7 @@ function StemStory({ demo, start, setStart, gain, channelOrder, orderName, motif
     </div>
     <details className="kernel-bank" data-feedback-id="All 512 stem filters heatmap">
       <summary>Open all 512 stem filters as one 512 × 21 heatmap</summary>
-      <p>Each row is one filter. Each cell summarizes one kernel position using the strongest A/C/G/T weight there; blue is positive and coral is negative. Click a row to inspect its full 4 × 21 kernel below.</p>
+      <p>Each row is one filter. Each cell summarizes one kernel position using the strongest A/C/G/T weight there; coral is positive and blue is negative. Click a row to inspect its full 4 × 21 kernel below.</p>
       {kernelError && <div className="tensor-error"><b>Kernel data did not load</b><span>{kernelError}</span></div>}
       <KernelBankCanvas values={kernelValues} selected={filterNumber} channelOrder={channelOrder} onSelect={next => { setFilterNumber(next); setStart(bank.peak_positions_zero_based[next]); }} />
       <div className="axis"><span>rank 1 · Channel {channelOrder[0] + 1}</span><span>{CHANNEL_ORDER_LABELS[orderName]} · immutable IDs retained</span><span>rank 512 · Channel {channelOrder[511] + 1}</span></div>
@@ -415,7 +415,7 @@ function TensorCanvas({ tensor, values, mode, start, width, transfer, gain, sign
         const level = transformValue(Math.abs(value), maximum, transfer, gain);
         const color = signed
           ? [247, 244, 236].map((base, index) => {
-              const target = value >= 0 ? [44, 129, 158] : [225, 91, 69];
+              const target = value >= 0 ? [225, 91, 69] : [44, 129, 158];
               return Math.round(base + (target[index] - base) * level);
             })
           : heatColor(level).match(/\d+/g)!.map(Number);
@@ -662,7 +662,7 @@ function ProfileKernelHeatmap({ weights, bias, channelOrder }: { weights: number
   };
   return <div className="profile-kernel-card">
     <div className="mini-heading"><div><small>THE LEARNED PROFILE KERNEL</small><h3>75 relative positions × 512 input channels</h3></div><span>displayed as 512 channel rows × 75 position columns</span></div>
-    <p>This one signed weight matrix is reused at every output position. Blue weights push a logit upward; coral weights push it downward. A color alone is not a biological motif—the weight acts on a learned final-layer feature.</p>
+    <p>This one signed weight matrix is reused at every output position. Coral weights push a logit upward; blue weights push it downward. A color alone is not a biological motif—the weight acts on a learned final-layer feature.</p>
     <div className="profile-kernel-layout">
       <div className="profile-kernel-axis"><span>rank 1 · Ch {channelOrder[0] + 1}</span><b>512 input channels</b><span>rank 512 · Ch {channelOrder[511] + 1}</span></div>
       <div className="profile-kernel-shell">
@@ -785,7 +785,7 @@ function TensorInspector({ demo, channelOrder, orderName }: { demo: Demo; channe
     </div>
     <div className="computation-note"><b>{computationLabel}</b><span>{layer === "stem" ? "The stem has no shortcut addition." : computation === "output" ? "This is the tensor passed to the next block." : "This view isolates the residual block’s transform path before its shortcut is added."}</span></div>
     <div className="channel-order-note"><b>{CHANNEL_ORDER_LABELS[orderName]}</b><span>Every tensor row uses the same display permutation. Shortcut rows, residual input/output axes, head weights, and immutable channel IDs stay synchronized.</span></div>
-    <div className="truth-note"><b>{(tensor.zero_fraction * 100).toFixed(1)}% exact zeros</b><span>{signed ? "Coral cells are negative; blue cells are positive." : "Blank-looking areas are real zero or weak activations, not missing data."}</span><em>Published checkpoint · raw float32</em></div>
+    <div className="truth-note"><b>{(tensor.zero_fraction * 100).toFixed(1)}% exact zeros</b><span>{signed ? "Coral cells are positive; blue cells are negative." : "Blank-looking areas are real zero or weak activations, not missing data."}</span><em>Published checkpoint · raw float32</em></div>
     {error && <div className="tensor-error" role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
     {view === "tensor" ? <>
       <div className="full-view-card"><div className="mini-heading"><div><small>WHOLE TENSOR</small><h3>All 512 channels × {length.toLocaleString()} positions</h3></div><span>{croppedPerSide ? `${croppedPerSide.toLocaleString()} positions cropped from each side · ` : "full stem width · "}click to move the zoom</span></div><div className="whole-length-frame" style={{ width: `${wholeWidthPercent}%` }}><TensorCanvas tensor={tensor} values={values} mode="full" start={0} width={length} transfer={transfer} gain={gain} signed={signed} marker={center} onMarker={setCenter} channelOrder={channelOrder} /></div></div>
