@@ -166,7 +166,8 @@ test("the dilation evolution demo separates geometric reach from measured contri
   assert.match(page, /not proof that every reachable feature affected the prediction/i);
   assert.match(page, /RECEPTIVE_FIELDS\[stage\] - 21/);
   assert.match(page, /Balanced merge · both paths active/);
-  assert.match(page, /shared profile-output region 558–1,557/);
+  assert.match(page, /Shared profile-output-aligned centers/);
+  assert.match(page, /You moved from the selected/);
   assert.match(page, /PRESERVED SHORTCUT/);
   assert.match(page, /LEARNED CORRECTION/);
   assert.match(page, /Each tap reads all 512 channels/);
@@ -224,7 +225,8 @@ test("the audit page distinguishes description, mechanism, and biology", async (
   assert.match(page, /Three different strengths of claim/);
   assert.match(page, /Permanent channel registry/i);
   assert.match(page, /Do dilated kernels really mix channels/);
-  assert.match(page, /CKA compares whole representations/);
+  assert.match(page, /128 aligned positions/);
+  assert.match(page, /64 highest-variance channels/);
   assert.match(page, /Corpus-derived logos are deliberately not fabricated/);
   assert.match(page, /TF-MoDISco/);
   assert.match(page, /JASPAR/);

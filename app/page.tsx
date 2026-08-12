@@ -1,16 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import k562Peak from "./data/k562-peak-activations.json";
-import gm21515 from "./data/gm21515-activations.json";
-import synthetic from "./data/synthetic-activations.json";
-import auditArtifact from "./data/model-audit-summary.json";
 import { loadFloat32Tensor } from "./tensor-loader";
 import { CHANNEL_ORDER_LABELS, centeredStemWeights, displayRank, informationContent, reverseComplementBaseRows, reverseComplementSequence, type ActivationMotif, type ChannelOrder, type KernelOrientation, type KernelViewMode } from "./model-analysis";
 
 // Use the common checkpoint schema here. K562 carries additional teaching-only
 // residual examples, but those are consumed by the dedicated dilation page.
-type Demo = typeof gm21515;
+type Demo = typeof import("./data/gm21515-activations.json");
+type ResidualExample = { selection_rule: string; output_position_zero_based: number; input_aligned_coordinate_one_based?: number; output_channel_zero_based: number; weights_input_channels_by_taps: number[][]; bias: number; transformed_after_relu: number; shortcut_value: number; block_output: number };
 type Tensor = Demo["tensors"]["stem"];
 type TensorKey = "stem" | "res1" | "res2" | "res3" | "res4" | "res5" | "res6" | "res7" | "res8";
 type LayerKey = TensorKey | "profile";
@@ -20,8 +17,8 @@ type ComputationStage = "conv" | "bias" | "relu" | "output";
 
 const BASES = ["A", "C", "G", "T"] as const;
 const BASE_COLORS = ["#e96b54", "#4f97b2", "#e5b33f", "#72a17e"];
-const PRESETS: Record<string, Demo> = { k562: k562Peak, gm21515, synthetic };
-const AUDIT_CHECKPOINTS = (auditArtifact as unknown as { checkpoints: Record<string, { channel_orders: Record<ChannelOrder, number[]>; activation_motifs: { status: string; reason: string; target_site_count_per_filter: number; planned_corpus: string; selection_rule: string; motifs: ActivationMotif[] } }> }).checkpoints;
+type AuditCheckpoints = Record<string, { channel_orders: Record<ChannelOrder, number[]>; activation_motifs: { status: string; reason: string; target_site_count_per_filter: number; planned_corpus: string; selection_rule: string; motifs: ActivationMotif[] } }>;
+const PRESET_URLS: Record<string, string> = { k562: "/data/demos/k562.json", gm21515: "/data/demos/gm21515.json", synthetic: "/data/demos/synthetic.json" };
 const CHANNEL_ORDER_KEYS = Object.keys(CHANNEL_ORDER_LABELS) as ChannelOrder[];
 const DILATIONS = [2, 4, 8, 16, 32, 64, 128, 256];
 const LENGTHS = [2114, 2094, 2090, 2082, 2066, 2034, 1970, 1842, 1586, 1074];
@@ -32,6 +29,24 @@ const css = (values: Record<string, string | number>) => values as CSSProperties
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
 const offsetForLength = (length: number) => (2114 - length) / 2;
 const inputCoordinate = (local: number, length: number) => Math.round(offsetForLength(length) + local + 1);
+
+function useJsonAsset<T>(url: string) {
+  const [loaded, setLoaded] = useState<{ url: string; value: T } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setError(null);
+    fetch(url, { signal: controller.signal }).then(response => {
+      if (!response.ok) throw new Error(`Data request failed (${response.status}) for ${url}`);
+      return response.json() as Promise<T>;
+    }).then(value => setLoaded({ url, value })).catch(reason => {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      setError(reason instanceof Error ? reason.message : "The data could not be loaded.");
+    });
+    return () => controller.abort();
+  }, [url]);
+  return { value: loaded?.url === url ? loaded.value : null, error };
+}
 
 function tensorFor(demo: Demo, key: TensorKey): Tensor {
   return demo.tensors[key] as Tensor;
@@ -524,24 +539,29 @@ function ResidualStory({ demo, block, setBlock, channelOrder }: { demo: Demo; bl
   const { values: inputValues } = useTensorData(inputTensor);
   const inputLength = LENGTHS[block];
   const outputLength = LENGTHS[block + 1];
-  const [position, setPosition] = useState(kernel.trace.output_position_zero_based);
-  const outputChannel = kernel.output_channel_zero_based;
+  const availableModes = (kernel as typeof kernel & { example_modes?: Record<"balanced" | "correction" | "output", ResidualExample> }).example_modes;
+  const [exampleMode, setExampleMode] = useState<"balanced" | "correction" | "output">("balanced");
+  const selectedExample = availableModes?.[exampleMode];
+  const [position, setPosition] = useState(selectedExample?.output_position_zero_based ?? kernel.trace.output_position_zero_based);
+  const outputChannel = selectedExample?.output_channel_zero_based ?? kernel.output_channel_zero_based;
+  const exampleWeights = selectedExample?.weights_input_channels_by_taps ?? kernel.weights_input_channels_by_taps;
+  const exampleBias = selectedExample?.bias ?? kernel.bias;
 
   const calculation = useMemo(() => {
     if (!inputValues) return null;
     const tapPositions = [position, position + dilation, position + 2 * dilation];
     const features = tapPositions.map(tap => Array.from({ length: 512 }, (_, channel) => inputValues[channel * inputLength + tap]));
-    const weights = [0, 1, 2].map(tap => kernel.weights_input_channels_by_taps.map(row => row[tap]));
+    const weights = [0, 1, 2].map(tap => exampleWeights.map(row => row[tap]));
     const products = features.map((values, tap) => values.map((value, channel) => value * weights[tap][channel]));
     const tapSums = products.map(values => values.reduce((sum, value) => sum + value, 0));
     const convolution = tapSums.reduce((sum, value) => sum + value, 0);
-    const beforeRelu = convolution + kernel.bias;
+    const beforeRelu = convolution + exampleBias;
     const transformed = Math.max(0, beforeRelu);
     const shortcut = features[1][outputChannel];
     const output = transformed + shortcut;
     const contributors = products.flatMap((values, tap) => values.map((value, channel) => ({ tap, channel, value, feature: features[tap][channel], weight: weights[tap][channel] }))).sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 6);
     return { tapPositions, features, weights, products, tapSums, convolution, beforeRelu, transformed, shortcut, output, contributors };
-  }, [inputValues, inputLength, position, dilation, kernel, outputChannel]);
+  }, [inputValues, inputLength, position, dilation, exampleWeights, exampleBias, outputChannel]);
 
   const globalOutput = inputCoordinate(position, outputLength);
   const tapSpan = 2 * dilation + 1;
@@ -551,6 +571,7 @@ function ResidualStory({ demo, block, setBlock, channelOrder }: { demo: Demo; bl
       The three taps are still a sliding convolution. Dilation changes only their spacing. At every tap, the kernel reads <b>all 512 feature channels</b>—not one channel in isolation.
     </SectionHeading>
     <div className="choice-row block-choices">{DILATIONS.map((value, index) => <button key={value} className={block === index + 1 ? "active" : ""} onClick={() => setBlock(index + 1)}><b>Block {index + 1}</b><small>d={value} · RF {RECEPTIVE_FIELDS[index + 1]}</small></button>)}</div>
+    <div className="residual-example-controls"><label><span>Teaching example</span><select value={availableModes ? exampleMode : "legacy"} disabled={!availableModes} onChange={event => { const mode = event.target.value as "balanced" | "correction" | "output"; setExampleMode(mode); setPosition(availableModes![mode].output_position_zero_based); }}><option value="balanced">Balanced merge · both paths active</option><option value="correction">Strongest learned correction</option><option value="output">Strongest final activation</option>{!availableModes && <option value="legacy">Stored checkpoint example</option>}</select></label><p>{selectedExample ? `${selectedExample.selection_rule}. Channel ${selectedExample.output_channel_zero_based + 1}, input-aligned coordinate ${selectedExample.input_aligned_coordinate_one_based}.` : "This preset predates the multi-example export. The displayed cell is the exact stored checkpoint example; switch to K562 for the balanced/correction/output teaching selector."}</p></div>
     <div className="dilation-explainer" data-feedback-id="Dilated three-tap slider">
       <div className="mini-heading"><div><small>SAME SLIDING IDEA</small><h3>Three one-position taps span {tapSpan.toLocaleString()} positions</h3></div><span>kernel width = 3 · dilation = {dilation}</span></div>
       <div className="tap-ruler">
@@ -568,7 +589,7 @@ function ResidualStory({ demo, block, setBlock, channelOrder }: { demo: Demo; bl
         {[0, 1, 2].map(tap => <article key={tap}>
           <h4>Tap {tap + 1}</h4><div className="vector-equation">
             <span><VectorCanvas values={channelOrder.map(channel => (calculation?.features[tap] ?? Array(512).fill(0))[channel])} /><small>512 input features · global order</small></span><b>×</b>
-            <span><VectorCanvas values={channelOrder.map(channel => (calculation?.weights[tap] ?? kernel.weights_input_channels_by_taps.map(row => row[tap]))[channel])} signed /><small>same input-channel order</small></span><b>=</b>
+            <span><VectorCanvas values={channelOrder.map(channel => (calculation?.weights[tap] ?? exampleWeights.map(row => row[tap]))[channel])} signed /><small>same input-channel order</small></span><b>=</b>
             <span><VectorCanvas values={channelOrder.map(channel => (calculation?.products[tap] ?? Array(512).fill(0))[channel])} signed /><small>same product order</small></span>
           </div><strong>tap sum {calculation?.tapSums[tap].toFixed(4) ?? "…"}</strong>
         </article>)}
@@ -577,7 +598,7 @@ function ResidualStory({ demo, block, setBlock, channelOrder }: { demo: Demo; bl
     </div>
 
     <div className="residual-calculation" data-feedback-id="Residual block numeric flow">
-      <div className="transform-lane"><small>TRANSFORM PATH</small><span><em>3 tap sums</em><b>{calculation?.tapSums.map(value => value.toFixed(3)).join(" + ") ?? "loading"}</b></span><i>→</i><span><em>convolution sum</em><b>{calculation?.convolution.toFixed(4) ?? "…"}</b></span><i>+</i><span><em>bias</em><b>{kernel.bias.toFixed(4)}</b></span><i>→</i><span><em>before ReLU</em><b>{calculation?.beforeRelu.toFixed(4) ?? "…"}</b></span><i>→</i><span><em>after ReLU</em><b>{calculation?.transformed.toFixed(4) ?? "…"}</b></span></div>
+      <div className="transform-lane"><small>TRANSFORM PATH</small><span><em>3 tap sums</em><b>{calculation?.tapSums.map(value => value.toFixed(3)).join(" + ") ?? "loading"}</b></span><i>→</i><span><em>convolution sum</em><b>{calculation?.convolution.toFixed(4) ?? "…"}</b></span><i>+</i><span><em>bias</em><b>{exampleBias.toFixed(4)}</b></span><i>→</i><span><em>before ReLU</em><b>{calculation?.beforeRelu.toFixed(4) ?? "…"}</b></span><i>→</i><span><em>after ReLU</em><b>{calculation?.transformed.toFixed(4) ?? "…"}</b></span></div>
       <div className="shortcut-lane"><small>SHORTCUT PATH</small><span><em>same channel at the center tap</em><b>{calculation?.shortcut.toFixed(4) ?? "…"}</b></span><p>The shortcut tensor is cropped by {dilation} positions on the left and {dilation} on the right, so it aligns with the shorter convolution output.</p></div>
       <div className="merge-lane"><span>transformed value</span><b>{calculation?.transformed.toFixed(4) ?? "…"}</b><i>+</i><span>preserved shortcut</span><b>{calculation?.shortcut.toFixed(4) ?? "…"}</b><i>=</i><strong>{calculation?.output.toFixed(4) ?? "…"}</strong><em>one cell in block {block} output · no ReLU after this addition</em></div>
     </div>
@@ -614,7 +635,9 @@ function OutputStory({ demo, channelOrder }: { demo: Demo; channelOrder: number[
   const denseProducts = pooled.map((value, index) => value * demo.head_demos.count_dense_weights[index]);
   const denseSum = denseProducts.reduce((sum, value) => sum + value, 0);
   const profileSum = expectedCounts.reduce((sum, value) => sum + value, 0);
-  const profilePositions = Array.from({ length: 61 }, (_, index) => 470 + index);
+  const profilePeak = expectedCounts.indexOf(Math.max(...expectedCounts));
+  const profileZoomStart = clamp(profilePeak - 30, 0, expectedCounts.length - 61);
+  const profilePositions = Array.from({ length: 61 }, (_, index) => profileZoomStart + index);
 
   return <section className="story-section output-story" id="outputs">
     <SectionHeading step="5" eyebrow="TWO OUTPUT HEADS" title="The same final tensor answers “where?” and “how much?” in parallel">
@@ -625,7 +648,7 @@ function OutputStory({ demo, channelOrder }: { demo: Demo; channelOrder: number[
     <div className="output-branches">
       <article data-feedback-id="Profile head stages">
         <div className="mini-heading"><div><small>PROFILE HEAD · WHERE?</small><h3>A 1,000-position distribution</h3></div><span>Conv1D kernel 75 × 512 × 1</span></div>
-        <div className="head-stage"><b>1. Relative logits: logit − maximum logit</b><span>the largest becomes 0; subtracting one constant changes no softmax probability. Bars preserve the original ordering.</span><MiniBars values={relativeLogitHeights} /></div>
+        <div className="head-stage"><b>1. Relative logits for an upward bar chart: logit − minimum logit</b><span>the smallest becomes 0. Subtracting one shared constant changes no softmax probability, and the tallest bar remains the largest logit.</span><MiniBars values={relativeLogitHeights} /></div>
         <FlowArrow label="exponentiate the shifted scores" />
         <div className="head-stage"><b>2. Relative positive scores</b><span>exp(logit − max); the same position is still highest</span><MiniBars values={exponentials} /></div>
         <FlowArrow label="divide every score by their sum" />
@@ -633,7 +656,7 @@ function OutputStory({ demo, channelOrder }: { demo: Demo; channelOrder: number[
         <FlowArrow label={`multiply every position by ${demo.outputs.predicted_total_count.toFixed(1)}`} />
         <div className="head-stage final"><b>4. Expected counts per base</b><span>the displayed accessibility profile; sums to {profileSum.toFixed(1)}</span><MiniBars values={expectedCounts} /></div>
         <p className="softmax-note"><b>Softmax preserves ordering:</b> raw logits, shifted logits, exponentials, probabilities, and expected counts all have the same peak position. Softmax sharpens relative differences; it does not invent a new peak.</p>
-        <div className="profile-zoom"><b>61-position zoom</b><div className="signal-bars" style={css({ "--columns": 61 })}>{profilePositions.map(position => <i key={position} style={{ height: `${3 + expectedCounts[position] / Math.max(...expectedCounts) * 82}px` }} />)}</div><BaseLetters sequence={demo.input.sequence} positions={profilePositions.map(position => position + 557)} /><div className="axis"><span>input 1,028</span><span>expected cuts per base</span><span>input 1,088</span></div></div>
+        <div className="profile-zoom"><b>61-position zoom around the predicted peak</b><div className="signal-bars" style={css({ "--columns": 61 })}>{profilePositions.map(position => <i key={position} style={{ height: `${3 + expectedCounts[position] / Math.max(...expectedCounts) * 82}px` }} />)}</div><BaseLetters sequence={demo.input.sequence} positions={profilePositions.map(position => position + 557)} /><div className="axis"><span>input {profileZoomStart + 558}</span><span>expected cuts per base · peak at input {profilePeak + 558}</span><span>input {profileZoomStart + 618}</span></div></div>
       </article>
       <article data-feedback-id="Count head stages">
         <div className="mini-heading"><div><small>COUNT HEAD · HOW MUCH?</small><h3>One total-count scalar</h3></div><span>global mean → dense</span></div>
@@ -701,14 +724,15 @@ function ProfileKernelHeatmap({ weights, bias, channelOrder }: { weights: number
 }
 
 function ProfileLayerView({ demo, finalTensor, values, error, channelOrder }: { demo: Demo; finalTensor: Tensor; values: Float32Array | null; error: string | null; channelOrder: number[] }) {
-  const [profilePosition, setProfilePosition] = useState(500);
+  const expected = demo.tensors.profile_signal.position_max;
+  const profilePeak = expected.indexOf(Math.max(...expected));
+  const [profilePosition, setProfilePosition] = useState(profilePeak);
   const logits = demo.tensors.profile_logits.position_max;
   const maximumLogit = Math.max(...logits);
   const shiftedLogits = logits.map(value => value - maximumLogit);
   const minimumShiftedLogit = Math.min(...shiftedLogits);
   const relativeLogitHeights = shiftedLogits.map(value => value - minimumShiftedLogit);
   const probabilities = demo.tensors.profile_probabilities.position_max;
-  const expected = demo.tensors.profile_signal.position_max;
   const zoomStart = clamp(profilePosition - 30, 0, 939);
   const zoomPositions = Array.from({ length: 61 }, (_, index) => zoomStart + index);
   const inputPositions = zoomPositions.map(position => position + 557);
@@ -727,7 +751,7 @@ function ProfileLayerView({ demo, finalTensor, values, error, channelOrder }: { 
     <ProfileKernelHeatmap weights={demo.head_demos.profile_weights_input_channels_by_positions} bias={demo.head_demos.profile_bias} channelOrder={channelOrder} />
     <FlowArrow label="element-wise multiply → sum 38,400 products → add bias → slide one position" />
     <div className="profile-stage-stack" style={{ width: `${outputWidth}%` }}>
-      <article><div className="mini-heading"><div><small>AFTER CONVOLUTION · SHIFTED FOR DISPLAY</small><h3>1 × 1,000 relative logits</h3></div><span>logit − maximum logit; ordering is unchanged and the arbitrary zero level is removed</span></div><SignalCanvas track={relativeLogitHeights} start={0} width={1000} marker={profilePosition} signed={false} onMarker={setProfilePosition} label="Select a relative profile logit" /></article>
+      <article><div className="mini-heading"><div><small>AFTER CONVOLUTION · SHIFTED FOR AN UPWARD BAR CHART</small><h3>1 × 1,000 relative logits</h3></div><span>logit − minimum logit; the smallest becomes zero and ordering is unchanged</span></div><SignalCanvas track={relativeLogitHeights} start={0} width={1000} marker={profilePosition} signed={false} onMarker={setProfilePosition} label="Select a relative profile logit" /></article>
       <FlowArrow label="softmax across all 1,000 logits" />
       <article><div className="mini-heading"><div><small>NORMALIZED PROFILE SHAPE</small><h3>1 × 1,000 probabilities</h3></div><span>nonnegative · sums to 1</span></div><SignalCanvas track={probabilities} start={0} width={1000} marker={profilePosition} signed={false} onMarker={setProfilePosition} label="Select a profile probability" /></article>
       <FlowArrow label={`multiply every position by total count ${demo.outputs.predicted_total_count.toFixed(1)}`} />
@@ -885,16 +909,21 @@ function FeedbackLayer() {
 
 export default function Home() {
   const [preset, setPreset] = useState("k562");
-  const [windowStart, setWindowStart] = useState(PRESETS.k562.filter_demos[0].peak_position_zero_based);
+  const [windowStart, setWindowStart] = useState(0);
   const [block, setBlock] = useState(1);
   const [colorGain, setColorGain] = useState(1);
   const [channelOrderName, setChannelOrderName] = useState<ChannelOrder>("original");
-  const demo = PRESETS[preset];
-  const auditCheckpoint = AUDIT_CHECKPOINTS[preset === "gm21515" ? "gm21515" : "k562-peak"];
+  const { value: demo, error: demoError } = useJsonAsset<Demo>(PRESET_URLS[preset]);
+  const { value: auditCheckpoints, error: auditError } = useJsonAsset<{ checkpoints: AuditCheckpoints }>("/data/model-audit-summary.json");
+  const auditCheckpoint = auditCheckpoints?.checkpoints[preset === "gm21515" ? "gm21515" : "k562-peak"];
   const empiricalOrderingAvailable = preset !== "synthetic";
+  useEffect(() => {
+    if (demo) setWindowStart(demo.filter_demos[0].peak_position_zero_based);
+  }, [demo]);
+  if (!demo || !auditCheckpoint) return <main className="route-loading"><b>Loading verified checkpoint data…</b>{(demoError || auditError) && <p role="alert">{demoError || auditError}</p>}</main>;
   const channelOrder = auditCheckpoint.channel_orders[empiricalOrderingAvailable ? channelOrderName : "original"];
   return <main>
-    <header className="topbar"><a href="#top" className="brand"><b>SEQ</b><span>CNN EXPLAINER</span></a><nav><a href="#architecture">Model map</a><a href="#stem">Stem</a><a href="#residual">Residual blocks</a><a href="#outputs">Outputs</a><a href="#tensor-inspector">Tensors</a><a href="/dilation-trace">Dilation evolution ↗</a><a href="/model-audit">Model audit ↗</a><a href="/basset">Basset model ↗</a></nav><div className="topbar-controls"><label><span>Demo</span><select value={preset} onChange={event => { const nextPreset = event.target.value; const nextDemo = PRESETS[nextPreset]; setPreset(nextPreset); setWindowStart(nextDemo.filter_demos[0].peak_position_zero_based); setBlock(1); if (nextPreset === "synthetic") setChannelOrderName("original"); }}><option value="k562">K562 DNase checkpoint</option><option value="gm21515">GM21515 ATAC checkpoint</option><option value="synthetic">K562 synthetic sequence</option></select></label><label title={empiricalOrderingAvailable ? "One global display order" : "Empirical orders were not computed for the synthetic sequence"}><span>Channel order</span><select disabled={!empiricalOrderingAvailable} value={empiricalOrderingAvailable ? channelOrderName : "original"} onChange={event => setChannelOrderName(event.target.value as ChannelOrder)}>{CHANNEL_ORDER_KEYS.map(key => <option value={key} key={key}>{CHANNEL_ORDER_LABELS[key]}</option>)}</select></label></div></header>
+    <header className="topbar"><a href="#top" className="brand"><b>SEQ</b><span>CNN EXPLAINER</span></a><nav><a href="#architecture">Model map</a><a href="#stem">Stem</a><a href="#residual">Residual blocks</a><a href="#outputs">Outputs</a><a href="#tensor-inspector">Tensors</a><a href="/dilation-trace">Dilation evolution ↗</a><a href="/model-audit">Model audit ↗</a><a href="/basset">Basset model ↗</a></nav><div className="topbar-controls"><label><span>Demo</span><select value={preset} onChange={event => { const nextPreset = event.target.value; setPreset(nextPreset); setWindowStart(0); setBlock(1); if (nextPreset === "synthetic") setChannelOrderName("original"); }}><option value="k562">K562 DNase checkpoint</option><option value="gm21515">GM21515 ATAC checkpoint</option><option value="synthetic">K562 synthetic sequence</option></select></label><label title={empiricalOrderingAvailable ? "One global display order" : "Empirical orders were not computed for the synthetic sequence"}><span>Channel order</span><select disabled={!empiricalOrderingAvailable} value={empiricalOrderingAvailable ? channelOrderName : "original"} onChange={event => setChannelOrderName(event.target.value as ChannelOrder)}>{CHANNEL_ORDER_KEYS.map(key => <option value={key} key={key}>{CHANNEL_ORDER_LABELS[key]}</option>)}</select></label></div></header>
     <div id="top" />
     <section className="hero">
       <div><p>ONE CALCULATION · FOLLOWED TOP TO BOTTOM</p><h1>How a DNA sequence becomes an accessibility prediction</h1><span>Start with bases. Watch a local detector slide. Then see dilated blocks combine learned features across distance and channels.</span></div>

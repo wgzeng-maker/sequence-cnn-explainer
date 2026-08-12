@@ -17,7 +17,7 @@ test("checkpoint-specific correlation language does not overclaim", async ({ pag
 test("dilation lab opens on a balanced, non-degenerate merge", async ({ page }) => {
   await page.goto("/dilation-trace");
   const flow = page.getByTestId("residual-numeric-flow");
-  await expect(flow).toBeVisible();
+  await expect(flow).toBeVisible({ timeout: 30_000 });
   await expect(page.getByLabel("Example selection rule")).toHaveValue("balanced");
   const correction = Number(await flow.getByTestId("correction-value").textContent());
   const shortcut = Number(await flow.getByTestId("shortcut-value").textContent());
@@ -40,9 +40,19 @@ test("residual selection modes remain inside the shared profile region", async (
 test("softmax story explains shifted logits without changing rank", async ({ page }) => {
   await page.goto("/");
   const outputs = page.locator("#outputs");
-  await expect(outputs).toContainText("logit − maximum logit");
+  await expect(outputs).toContainText("logit − minimum logit");
   await expect(outputs).toContainText("Softmax preserves ordering");
   await expect(outputs).toContainText("same peak position");
+});
+
+test("main residual lesson defaults to a balanced two-path merge", async ({ page }) => {
+  await page.goto("/");
+  await page.waitForFunction(() => !document.body.innerText.includes("Loading verified checkpoint data"));
+  await expect(page.getByLabel("Teaching example")).toHaveValue("balanced");
+  const merge = page.locator("#residual .merge-lane");
+  const values = await merge.locator("b").allTextContents();
+  expect(Number(values[0])).toBeGreaterThan(0);
+  expect(Number(values[1])).toBeGreaterThan(0);
 });
 
 test("tensor inspector discloses and switches its magnitude scale", async ({ page }) => {

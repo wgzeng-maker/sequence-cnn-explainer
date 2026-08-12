@@ -33,7 +33,7 @@ Open [http://localhost:3000](http://localhost:3000).
 npm test
 ```
 
-This release gate runs linting, TypeScript checking, a production build, 19 numerical/source tests, and five Playwright browser tests. The browser suite renders the routes and exercises checkpoint switching, the residual-example selector, the shifted-logit softmax explanation, and the Basset K562 output.
+This release gate runs linting, TypeScript checking, a production build, numerical/source tests, and rendered Playwright browser tests. The browser suite exercises checkpoint switching, both residual-example selectors, tensor loading and scaling, the shifted-logit softmax explanation, and the Basset K562 output.
 
 The independent scientific/export checks remain available separately so `npm test` does not depend on a large local model environment:
 
