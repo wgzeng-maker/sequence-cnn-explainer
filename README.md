@@ -77,3 +77,11 @@ After changing a canonical JSON artifact in `app/data`, rebuild the compressed b
 ## Research and communication roadmap
 
 [`docs/interpretability-and-claude-handoff-plan.md`](docs/interpretability-and-claude-handoff-plan.md) records the computer-vision interpretation methods still worth adapting, the decision to add Basset before Basenji, the multi-model acceptance gates, and a ready-to-use staged prompt for Claude Code. The prompt deliberately stops after the repository audit, again after the report, and again after the slide deck so scientific claims can be reviewed before video production.
+
+## Documentation and publication controls
+
+- [`docs/TECHNICAL-DOCUMENTATION.md`](docs/TECHNICAL-DOCUMENTATION.md) is the complete architecture, tensor-shape, visualization, metric, and reproducibility reference for ChromBPNet and Basset.
+- [`docs/CLAIM-LEDGER.md`](docs/CLAIM-LEDGER.md) defines which structural, descriptive, mechanistic, and biological claims are currently supported and the qualifiers required for public communication.
+- [`docs/VOCABULARY-AND-MENTAL-MODELS.md`](docs/VOCABULARY-AND-MENTAL-MODELS.md) translates image-CNN intuition to sequence CNNs and standardizes terms for the future blog, slides, and video narration.
+
+The blog prompt and production handoff will be revised only after human review of these three documents.

@@ -309,3 +309,35 @@ test("the Basset page keeps motif detection, pooling, channel mixing, and dense 
   assert.equal(data.dense2_readout_example.contributions.length, 1000);
   assert.equal(data.outputs.k562_reader.contributions.length, 1000);
 });
+
+test("publication documentation preserves the audited evidence boundary", async () => {
+  const technical = await readFile(new URL("docs/TECHNICAL-DOCUMENTATION.md", root), "utf8");
+  const ledger = await readFile(new URL("docs/CLAIM-LEDGER.md", root), "utf8");
+  const vocabulary = await readFile(new URL("docs/VOCABULARY-AND-MENTAL-MODELS.md", root), "utf8");
+  const audit = JSON.parse(await readFile(new URL("app/data/model-audit-summary.json", root), "utf8"));
+  const basset = JSON.parse(await readFile(new URL("app/data/basset-demo.json", root), "utf8"));
+
+  assert.match(technical, /Structural fact/);
+  assert.match(technical, /one exact locus per checkpoint/i);
+  assert.match(technical, /activation motifs, or causal biological conclusions/i);
+  assert.match(technical, /1,041 bp/);
+  assert.match(technical, /1,115 bp/);
+  assert.match(technical, /75 × 512 = 38,400/);
+  assert.match(technical, /`200 × 10` cells/);
+  assert.match(technical, /weight for all 2,000 cells/);
+  assert.match(technical, new RegExp(`${(audit.checkpoints["k562-peak"].layers.stem.exact_zero_fraction * 100).toFixed(2)}%`));
+  assert.match(technical, new RegExp(`${(audit.checkpoints.gm21515.layers.res8.exact_zero_fraction * 100).toFixed(2)}%`));
+  assert.match(technical, new RegExp(basset.outputs.k562_probability.toFixed(4)));
+
+  assert.match(ledger, /Mechanistic and biological claims not yet earned/);
+  assert.match(ledger, /Pending \| “The model architecture permits separated features to interact/);
+  assert.match(ledger, /Activation alone is attribution/);
+  assert.match(ledger, /Channel identity is checkpoint-specific/);
+  assert.match(ledger, /These are single-locus descriptive observations/);
+
+  assert.match(vocabulary, /one spatial dimension: sequence position/);
+  assert.match(vocabulary, /Weight logo/);
+  assert.match(vocabulary, /Activation motif/);
+  assert.match(vocabulary, /Attribution motif/);
+  assert.match(vocabulary, /Red = positive, blue = negative/);
+});
