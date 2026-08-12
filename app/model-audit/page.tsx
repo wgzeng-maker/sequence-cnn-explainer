@@ -37,11 +37,6 @@ const css = (values: Record<string, string | number>) => values as CSSProperties
 const percent = (value: number) => `${(value * 100).toFixed(2)}%`;
 const format = (value: number) => value === 0 ? "0" : Math.abs(value) < .001 ? value.toExponential(2) : value.toFixed(4);
 
-function MetricBars({ values, labels }: { values: number[]; labels: string[] }) {
-  const maximum = Math.max(...values.map(Math.abs), 1e-12);
-  return <div className={styles.metricBars}>{values.map((value, index) => <div key={labels[index]}><span>{labels[index]}</span><i style={css({ "--bar": Math.abs(value) / maximum })} /><b>{format(value)}</b></div>)}</div>;
-}
-
 function QuantileChart({ values }: { values: number[] }) {
   const labels = ["min", "p01", "p25", "p50", "p75", "p99", "max"];
   const maximum = Math.max(...values.map(Math.abs), 1e-12);
@@ -137,7 +132,7 @@ function ProfileKernelHeatmap({ preset, order }: { preset: string; order: number
     <div className={styles.profileKernelYAxis}><span>rank 1 · Ch {order[0] + 1}</span><b>512 learned feature channels</b><span>rank 512 · Ch {order[511] + 1}</span></div>
     <div className={styles.profileKernelCanvas}>
       {error ? <p>{error}</p> : !weights ? <p>Loading exact profile weights…</p> : null}
-      <canvas ref={canvasRef} aria-label="Signed profile-head kernel heatmap with 512 channels and 75 relative positions" onPointerMove={event => moveCursor(event.clientX, event.clientY, event.currentTarget)} />
+      <canvas ref={canvasRef} role="img" aria-label="Signed profile-head kernel heatmap with 512 channels and 75 relative positions" onPointerMove={event => moveCursor(event.clientX, event.clientY, event.currentTarget)} />
       <i style={{ left: `${cursor.position / 75 * 100}%`, top: `${cursor.displayRow / 512 * 100}%`, width: `${100 / 75}%`, height: `${100 / 512}%` }} />
     </div>
     <div className={styles.profileKernelXAxis}><span>relative position 1</span><b>75 kernel positions</b><span>relative position 75</span></div>
@@ -158,7 +153,11 @@ function SignedStrip({ values, order, label }: { values: number[]; order: number
 }
 
 function CorrelationRuler({ value }: { value: number }) {
-  return <div className={styles.correlationRuler}><div><span>−1</span><i /><span>0</span><i /><span>+1</span><b style={{ left: `${(value + 1) * 50}%` }} title={value.toFixed(3)} /></div><p><strong>{value.toFixed(3)}</strong> is very close to zero: across channels, large count-head weight magnitudes are almost unrelated to large profile-kernel energies.</p></div>;
+  const magnitude = Math.abs(value);
+  const strength = magnitude < .1 ? "very weak" : magnitude < .3 ? "weak" : magnitude < .5 ? "moderate" : "strong";
+  const direction = value < 0 ? "negative" : value > 0 ? "positive" : "zero";
+  const displayed = value.toFixed(3).replace("-", "−");
+  return <div className={styles.correlationRuler}><div><span>−1</span><i /><span>0</span><i /><span>+1</span><b style={{ left: `${(value + 1) * 50}%` }} title={displayed} /></div><p><strong>{displayed}</strong> is a <b>{strength} {direction}</b> channel-level association; the shared variance is {(value * value * 100).toFixed(1)}%. This is a descriptive weight statistic for one checkpoint. Confirm its direction and size across independently trained checkpoints and folds before generalizing.</p></div>;
 }
 
 function SimilarityMatrix({ checkpoint }: { checkpoint: Checkpoint }) {
@@ -188,7 +187,7 @@ export default function ModelAuditPage() {
     <section className={styles.hero}><p>CHROMBPNET · FOLD-0 WORKSPACE</p><h1>Separate what the tensors show from what the model uses—and what biology supports.</h1><span>This page is intentionally denser than the explainer. Every panel states its evidence scope, checkpoint, and sample size.</span></section>
 
     <section className={styles.controls}>
-      <label><span>Checkpoint</span><select value={preset} onChange={event => setPreset(event.target.value)}><option value="k562-peak">K562 · DNase · fold 0</option><option value="gm21515">GM21515 · ATAC · fold 0</option></select></label>
+      <label><span>Checkpoint</span><select data-testid="checkpoint-select" aria-label="Checkpoint" value={preset} onChange={event => setPreset(event.target.value)}><option value="k562-peak">K562 · DNase · fold 0</option><option value="gm21515">GM21515 · ATAC · fold 0</option></select></label>
       <label><span>Layer</span><select value={layer} onChange={event => setLayer(event.target.value as LayerName)}>{LAYERS.map(name => <option key={name}>{name}</option>)}</select></label>
       <label><span>Global channel order</span><select value={orderName} onChange={event => setOrderName(event.target.value as ChannelOrder)}>{ORDER_KEYS.map(key => <option value={key} key={key}>{CHANNEL_ORDER_LABELS[key]}</option>)}</select></label>
     </section>
@@ -207,7 +206,7 @@ export default function ModelAuditPage() {
 
     <section className={styles.section}>
       <div className={styles.panelHeading}><div><small>LAYER TABLE</small><h2>How the observed representation changes through the backbone</h2></div><span>exact full tensor · one displayed locus</span></div>
-      <div className={styles.layerTable}><span>layer</span><span>shape</span><span>exact zeros</span><span>median active / position</span><span>dynamic range</span><span>positive runs</span>{layerValues.map((metric, index) => <div className={layer === LAYERS[index] ? styles.selectedRow : ""} key={LAYERS[index]} onClick={() => setLayer(LAYERS[index])}><b>{LAYERS[index]}</b><span>{metric.shape[0]} × {metric.shape[1].toLocaleString()}</span><span>{percent(metric.exact_zero_fraction)}</span><span>{metric.median_active_channels_per_position.toFixed(0)} / 512</span><span>{format(metric.dynamic_range)}</span><span>{metric.positive_run_count.toLocaleString()}</span></div>)}</div>
+      <div className={styles.layerTable}><span>layer</span><span>shape</span><span>exact zeros</span><span>median active / position</span><span>dynamic range</span><span>positive runs</span>{layerValues.map((metric, index) => <div role="button" tabIndex={0} aria-pressed={layer === LAYERS[index]} className={layer === LAYERS[index] ? styles.selectedRow : ""} key={LAYERS[index]} onClick={() => setLayer(LAYERS[index])} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") setLayer(LAYERS[index]); }}><b>{LAYERS[index]}</b><span>{metric.shape[0]} × {metric.shape[1].toLocaleString()}</span><span>{percent(metric.exact_zero_fraction)}</span><span>{metric.median_active_channels_per_position.toFixed(0)} / 512</span><span>{format(metric.dynamic_range)}</span><span>{metric.positive_run_count.toLocaleString()}</span></div>)}</div>
       <div className={styles.metricDefinitions}><p><b>Median active / position</b><span>At each position, count channels with activation &gt; 10⁻⁷; then take the median across positions.</span></p><p><b>Positive runs</b><span>Total contiguous above-threshold stretches, counted separately within every channel. One long line is one run; one isolated cell is also one run.</span></p></div>
       <div className={styles.selectedMetrics}><div><small>SELECTED LAYER</small><h3>{layer} · {checkpoint.layers[layer].shape.join(" × ")}</h3><p>This is a distribution summary of all {checkpoint.layers[layer].shape[0].toLocaleString()} × {checkpoint.layers[layer].shape[1].toLocaleString()} entries—not seven selected channels or positions. ReLU sparsity is why several percentiles can all equal zero.</p></div><QuantileChart values={checkpoint.layers[layer].value_quantiles} /></div>
     </section>

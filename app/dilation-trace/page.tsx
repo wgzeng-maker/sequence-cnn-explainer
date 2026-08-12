@@ -11,6 +11,7 @@ import styles from "./page.module.css";
 type TensorKey = "stem" | "res1" | "res2" | "res3" | "res4" | "res5" | "res6" | "res7" | "res8";
 type RawTensors = Partial<Record<TensorKey, Float32Array>>;
 type Matrix = number[][];
+type ExampleMode = "balanced" | "correction" | "output";
 
 const DILATIONS = [2, 4, 8, 16, 32, 64, 128, 256];
 const LENGTHS = [2094, 2090, 2082, 2066, 2034, 1970, 1842, 1586, 1074];
@@ -54,7 +55,7 @@ function useRawTensors() {
 function color(value: number, maximum: number, signed = false) {
   const level = Math.sqrt(clamp(Math.abs(value) / Math.max(maximum, 1e-12), 0, 1));
   const background = [247, 244, 236];
-  const target = signed && value < 0 ? [225, 91, 69] : signed ? [44, 129, 158] : level < .55 ? [236, 188, 70] : [121, 38, 68];
+  const target = signed && value < 0 ? [44, 129, 158] : signed ? [225, 91, 69] : level < .55 ? [236, 188, 70] : [121, 38, 68];
   const strength = signed ? level : level < .55 ? level / .55 : (level - .55) / .45;
   const from = signed || level < .55 ? background : [236, 188, 70];
   const rgb = from.map((base, index) => Math.round(base + (target[index] - base) * strength));
@@ -176,20 +177,21 @@ function FeatureReach({ stemRaw, channels, globalCenter, stage }: { stemRaw?: Fl
       return { channel, global: localToGlobal(bestPosition, length), value: bestValue };
     });
   }, [stemRaw, channels, globalCenter]);
-  const half = (RECEPTIVE_FIELDS[stage] - 1) / 2;
+  const half = (RECEPTIVE_FIELDS[stage] - 21) / 2;
+  const centerSpan = RECEPTIVE_FIELDS[stage] - 20;
   const bandLeft = (520 - half) / 1041 * 100;
-  const bandWidth = RECEPTIVE_FIELDS[stage] / 1041 * 100;
+  const bandWidth = Math.max(centerSpan / 1041 * 100, .35);
   return <div className={styles.reachMap}>
     <div className={styles.reachHeader}><b>Stem-feature events inside the final 1,041-bp neighborhood</b><span>bright = geometrically reachable by {LABELS[stage]}</span></div>
     <div className={styles.reachLanes}>
-      <div className={styles.receptiveBand} style={{ left: `${bandLeft}%`, width: `${bandWidth}%` }}><span>{RECEPTIVE_FIELDS[stage]} bp</span></div>
+      <div className={styles.receptiveBand} style={{ left: `${bandLeft}%`, width: `${bandWidth}%` }}><span>±{half} stem centers</span></div>
       {events.map(event => {
         const reachable = Math.abs(event.global - globalCenter) <= half;
         return <div className={styles.reachLane} key={event.channel}><b>Ch {event.channel + 1}</b><i className={reachable ? styles.reachable : ""} style={{ left: `${(event.global - (globalCenter - 520)) / 1041 * 100}%` }} title={`Channel ${event.channel + 1}, input ${event.global}, activation ${event.value.toFixed(3)}`}><span>{event.value.toFixed(2)}</span></i></div>;
       })}
     </div>
     <div className={styles.axis}><span>{globalCenter - 520}</span><span>selected input coordinate {globalCenter}</span><span>{globalCenter + 520}</span></div>
-    <p>This map shows possible reach through the stacked kernels. It does not claim that every reachable feature affected the prediction.</p>
+    <p>The highlighted span is measured in centers of 21-base stem features: ±{half} centers at this stage. Together those features cover a {RECEPTIVE_FIELDS[stage]}-base input receptive field. This map shows possible reach, not proof that every reachable feature affected the prediction.</p>
   </div>;
 }
 
@@ -220,21 +222,22 @@ function BlockChange({ raw, channels, globalCenter, stage }: { raw: RawTensors; 
   </div>;
 }
 
-function ExactCommunication({ raw, globalCenter, stage, jumpToPeak }: { raw: RawTensors; globalCenter: number; stage: number; jumpToPeak: () => void }) {
-  if (stage === 0) return null;
-  const block = demo.residual_kernel_demos[stage - 1];
-  const inputKey = KEYS[stage - 1];
+function ExactCommunication({ raw, globalCenter, stage, exampleMode, setExampleMode, showExample }: { raw: RawTensors; globalCenter: number; stage: number; exampleMode: ExampleMode; setExampleMode: (mode: ExampleMode) => void; showExample: () => void }) {
+  const block = stage === 0 ? null : demo.residual_kernel_demos[stage - 1];
+  const example = block?.example_modes[exampleMode];
+  const calculationStage = Math.max(stage, 1);
+  const inputKey = KEYS[calculationStage - 1];
   const input = raw[inputKey];
-  const inputLength = LENGTHS[stage - 1];
-  const outputLength = LENGTHS[stage];
-  const dilation = DILATIONS[stage - 1];
+  const inputLength = LENGTHS[calculationStage - 1];
+  const outputLength = LENGTHS[calculationStage];
+  const dilation = DILATIONS[calculationStage - 1];
   const outputPosition = globalToLocal(globalCenter, outputLength);
-  const outputChannel = block.output_channel_zero_based;
+  const outputChannel = example?.output_channel_zero_based ?? 0;
   const calculation = useMemo(() => {
-    if (!input) return null;
+    if (!input || !example) return null;
     const taps = [0, 1, 2].map(tap => {
       const position = outputPosition + tap * dilation;
-      const contributions = block.weights_input_channels_by_taps.map((weights, channel) => {
+      const contributions = example.weights_input_channels_by_taps.map((weights, channel) => {
         const activation = input[channel * inputLength + position];
         const weight = weights[tap];
         return { channel, activation, weight, product: activation * weight };
@@ -243,14 +246,15 @@ function ExactCommunication({ raw, globalCenter, stage, jumpToPeak }: { raw: Raw
       return { position, sum, top: contributions.sort((a, b) => Math.abs(b.product) - Math.abs(a.product)).slice(0, 4) };
     });
     const convolution = taps.reduce((sum, tap) => sum + tap.sum, 0);
-    const beforeRelu = convolution + block.bias;
+    const beforeRelu = convolution + example.bias;
     const transformed = Math.max(0, beforeRelu);
     const shortcut = input[outputChannel * inputLength + outputPosition + dilation];
     return { taps, convolution, beforeRelu, transformed, shortcut, output: transformed + shortcut };
-  }, [input, inputLength, outputPosition, dilation, block, outputChannel]);
+  }, [input, inputLength, outputPosition, dilation, example, outputChannel]);
+  if (stage === 0 || !block || !example) return null;
   return <div className={styles.communication}>
-    <div className={styles.panelHeading}><div><small>ONE EXACT CELL CALCULATION</small><h2>How three feature neighborhoods communicate in {LABELS[stage]}</h2></div><button onClick={jumpToPeak}>Jump to this channel&apos;s strongest example</button></div>
-    <p className={styles.scopeNote}>Example output channel {outputChannel + 1} was selected because it reaches a large activation in this block—not because it is known to represent a named biological motif.</p>
+    <div className={styles.panelHeading}><div><small>4 · ONE EXACT CELL CALCULATION</small><h2>How three feature neighborhoods communicate in {LABELS[stage]}</h2></div><div className={styles.exampleControls}><label><span>Example selection</span><select aria-label="Example selection rule" value={exampleMode} onChange={event => setExampleMode(event.target.value as ExampleMode)}><option value="balanced">Balanced merge · both paths active</option><option value="correction">Strongest learned correction</option><option value="output">Strongest final activation</option></select></label><button onClick={showExample}>Show selected example</button></div></div>
+    <p className={styles.scopeNote}>Channel {outputChannel + 1} and input-aligned coordinate {example.input_aligned_coordinate_one_based} were selected by a declared rule inside the shared profile-output region 558–1,557. Balanced merge maximizes the weaker of correction and shortcut, so the default visibly teaches their addition. This is not a claim of biological importance.</p>
     <div className={styles.tapNetwork}>
       {calculation?.taps.map((tap, tapIndex) => <article key={tapIndex}>
         <header><b>Tap {tapIndex + 1}</b><span>input coordinate {localToGlobal(tap.position, inputLength)}</span></header>
@@ -259,7 +263,7 @@ function ExactCommunication({ raw, globalCenter, stage, jumpToPeak }: { raw: Raw
       </article>)}
       {!calculation && <p>Loading real input-feature vectors…</p>}
     </div>
-    {calculation && <div className={styles.numericFlow}><span>three tap sums <b>{calculation.convolution.toFixed(4)}</b></span><i>+</i><span>bias <b>{block.bias.toFixed(4)}</b></span><i>→</i><span>ReLU correction <b>{calculation.transformed.toFixed(4)}</b></span><i>+</i><span>shortcut <b>{calculation.shortcut.toFixed(4)}</b></span><i>=</i><strong>{calculation.output.toFixed(4)}</strong></div>}
+    {calculation && <div className={styles.numericFlow} data-testid="residual-numeric-flow"><span>three tap sums <b>{calculation.convolution.toFixed(4)}</b></span><i>+</i><span>bias <b>{example.bias.toFixed(4)}</b></span><i>→</i><span>ReLU correction <b data-testid="correction-value">{calculation.transformed.toFixed(4)}</b></span><i>+</i><span>shortcut <b data-testid="shortcut-value">{calculation.shortcut.toFixed(4)}</b></span><i>=</i><strong>{calculation.output.toFixed(4)}</strong></div>}
     <p className={styles.explanation}>Each tap reads all 512 channels. Therefore a positive feature in one channel at the left tap and another feature in a different channel at the right tap can jointly raise—or oppose—the same output cell.</p>
   </div>;
 }
@@ -288,7 +292,7 @@ function ProfileReader({ raw, globalCenter }: { raw: RawTensors; globalCenter: n
   const maxExpected = Math.max(...demo.tensors.profile_signal.position_max);
   return <div className={styles.profileReader}>
     <div className={styles.panelHeading}><div><small>FINAL PROFILE READER</small><h2>How the accumulated features become one profile position</h2></div><span>selected input coordinate {globalCenter}</span></div>
-    <div className={styles.profileInput}><b>75 final-tensor positions × 512 channels</b><span>38,400 activation × weight products feed this one logit</span><em>input coordinates {globalCenter - 37}–{globalCenter + 37}</em></div>
+    <div className={styles.profileInput}><b>75 final-tensor positions × 512 channels</b><span>38,400 activation × weight products feed this one logit</span><em>tensor centers {globalCenter - 37}–{globalCenter + 37}; combined input footprint {globalCenter - 557}–{globalCenter + 557} (1,115 bp)</em></div>
     <div className={styles.profileContributors}>{calculation?.top.map((item, index) => <div key={`${item.channel}-${item.kernelPosition}`}><small>#{index + 1}</small><b>Ch {item.channel + 1}</b><span>at input {globalCenter - 37 + item.kernelPosition}</span><i>{item.activation.toFixed(3)} × {item.weight.toFixed(3)}</i><strong>{item.product >= 0 ? "+" : ""}{item.product.toFixed(3)}</strong></div>)}</div>
     <div className={styles.profileFlow}><span>calculated logit <b>{calculation?.logit.toFixed(4) ?? "…"}</b></span><i>softmax with 999 other logits</i><span>probability <b>{probability.toExponential(2)}</b></span><i>× total count</i><strong>{expected.toFixed(3)} expected cuts</strong></div>
     <div className={styles.profileChart} style={css({ "--columns": 101 })}>{chartPositions.map(position => <i key={position} className={position === profileIndex ? styles.profileSelected : ""} style={{ height: `${3 + demo.tensors.profile_signal.position_max[position] / maxExpected * 100}px` }} />)}</div>
@@ -299,11 +303,12 @@ function ProfileReader({ raw, globalCenter }: { raw: RawTensors; globalCenter: n
 export default function DilationTracePage() {
   const { raw, error } = useRawTensors();
   const [stage, setStage] = useState(1);
-  const [globalCenter, setGlobalCenter] = useState(1058);
+  const [globalCenter, setGlobalCenter] = useState(948);
   const [channelStart, setChannelStart] = useState(clamp(demo.tensors.stem.selected_channels_zero_based[0] - 6, 0, 500));
   const [channelOrderName, setChannelOrderName] = useState<ChannelOrder>("original");
   const [playing, setPlaying] = useState(false);
-  const [sharedScale, setSharedScale] = useState(false);
+  const [sharedScale, setSharedScale] = useState(true);
+  const [exampleMode, setExampleMode] = useState<ExampleMode>("balanced");
   const channelOrder = CHANNEL_ORDERS[channelOrderName];
   const channels = channelOrder.slice(channelStart, channelStart + 12);
 
@@ -316,10 +321,10 @@ export default function DilationTracePage() {
     return () => window.clearInterval(timer);
   }, [playing]);
 
-  const jumpToPeak = () => {
+  const showExample = () => {
     if (stage === 0) return;
     const block = demo.residual_kernel_demos[stage - 1];
-    setGlobalCenter(clamp(localToGlobal(block.trace.output_position_zero_based, LENGTHS[stage]), 558, 1557));
+    setGlobalCenter(block.example_modes[exampleMode].input_aligned_coordinate_one_based);
   };
 
   return <main className={styles.lab}>
@@ -331,7 +336,7 @@ export default function DilationTracePage() {
     </section>
     <section className={styles.controls}>
       <div><button onClick={() => { setStage(0); setPlaying(true); }} className={styles.playButton}>{playing ? "Playing…" : "▶ Play all stages"}</button><button onClick={() => setSharedScale(value => !value)}>Color scale: {sharedScale ? "shared across stages" : "normalized per stage"}</button><label><b>Global channel order</b><select value={channelOrderName} onChange={event => { setChannelOrderName(event.target.value as ChannelOrder); setChannelStart(0); }}>{CHANNEL_ORDER_KEYS.map(key => <option value={key} key={key}>{CHANNEL_ORDER_LABELS[key]}</option>)}</select></label></div>
-      <label><b>Tracked input coordinate</b><input type="range" min="558" max="1557" value={globalCenter} onChange={event => setGlobalCenter(Number(event.target.value))} /><span>{globalCenter}</span></label>
+      <label><b>Tracked input coordinate</b><input aria-label="Tracked input coordinate" type="range" min="558" max="1557" value={globalCenter} onChange={event => setGlobalCenter(Number(event.target.value))} /><span>{globalCenter}</span><small>Shared profile-output-aligned centers: all backbone stages and a final profile logit are valid throughout this range.</small></label>
       <div className={styles.stageButtons}>{LABELS.map((label, index) => <button key={label} aria-pressed={stage === index} className={stage === index ? styles.active : ""} onClick={() => { setPlaying(false); setStage(index); }}><b>{label}</b><span>RF {RECEPTIVE_FIELDS[index]} bp</span></button>)}</div>
     </section>
     {error && <div className={styles.tensorError} role="alert"><b>Tensor data did not load</b><span>{error}</span><button onClick={() => window.location.reload()}>Retry</button></div>}
@@ -353,7 +358,7 @@ export default function DilationTracePage() {
       <BlockChange raw={raw} channels={channels} globalCenter={globalCenter} stage={stage} />
     </section>
 
-    <section className={styles.section}><ExactCommunication raw={raw} globalCenter={globalCenter} stage={stage} jumpToPeak={jumpToPeak} /></section>
+    <section className={styles.section}><ExactCommunication raw={raw} globalCenter={globalCenter} stage={stage} exampleMode={exampleMode} setExampleMode={mode => { setExampleMode(mode); if (stage > 0) setGlobalCenter(demo.residual_kernel_demos[stage - 1].example_modes[mode].input_aligned_coordinate_one_based); }} showExample={showExample} /></section>
 
     <section className={styles.section}>
       <div className={styles.sectionHeading}><span>5</span><div><small>FINAL READOUT</small><h2>The profile head reads the accumulated feature tensor</h2><p>At each output position, a width-75 kernel mixes all 512 final channels. Softmax then turns all 1,000 logits into a distribution.</p></div></div>

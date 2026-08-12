@@ -162,8 +162,11 @@ test("the page teaches one connected flow and avoids the discarded GC overview",
 
 test("the dilation evolution demo separates geometric reach from measured contribution", async () => {
   const page = await readFile(new URL("app/dilation-trace/page.tsx", root), "utf8");
-  assert.match(page, /possible reach through the stacked kernels/i);
-  assert.match(page, /does not claim that every reachable feature affected the prediction/i);
+  assert.match(page, /possible reach/i);
+  assert.match(page, /not proof that every reachable feature affected the prediction/i);
+  assert.match(page, /RECEPTIVE_FIELDS\[stage\] - 21/);
+  assert.match(page, /Balanced merge · both paths active/);
+  assert.match(page, /shared profile-output region 558–1,557/);
   assert.match(page, /PRESERVED SHORTCUT/);
   assert.match(page, /LEARNED CORRECTION/);
   assert.match(page, /Each tap reads all 512 channels/);
@@ -172,6 +175,19 @@ test("the dilation evolution demo separates geometric reach from measured contri
   assert.match(page, /FullTensorMagnifier/);
   assert.match(page, /12 display-adjacent, permanently identified channels/);
   assert.match(page, /Global channel order/);
+});
+
+test("balanced residual examples keep both paths active in the shared profile region", async () => {
+  const demo = await loadDemo("k562-peak");
+  for (const block of demo.residual_kernel_demos) {
+    const balanced = block.example_modes.balanced;
+    assert.ok(balanced.input_aligned_coordinate_one_based >= 558 && balanced.input_aligned_coordinate_one_based <= 1557);
+    assert.ok(balanced.transformed_after_relu > 0, `block ${block.block} correction should be active`);
+    assert.ok(balanced.shortcut_value > 0, `block ${block.block} shortcut should be active`);
+    assert.ok(Math.abs(balanced.transformed_after_relu + balanced.shortcut_value - balanced.block_output) < 2e-5);
+    assert.equal(balanced.weights_input_channels_by_taps.length, 512);
+    assert.equal(balanced.weights_input_channels_by_taps[0].length, 3);
+  }
 });
 
 test("the audit artifact preserves immutable channels and evidence boundaries", async () => {

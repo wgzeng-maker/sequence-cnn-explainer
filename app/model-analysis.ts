@@ -61,9 +61,11 @@ export function reverseComplementSequence(sequence: string) {
 }
 
 export function informationContent(pfmPositionsByBases: number[][], background = [.25, .25, .25, .25]) {
-  void background;
-  return pfmPositionsByBases.map(column => 2 + column.reduce((entropyTerm, probability) => (
-    probability > 0 ? entropyTerm + probability * Math.log2(probability) : entropyTerm
+  if (background.length !== 4 || background.some(value => value <= 0)) throw new Error("Background frequencies must contain four positive values");
+  const backgroundTotal = background.reduce((sum, value) => sum + value, 0);
+  const normalizedBackground = background.map(value => value / backgroundTotal);
+  return pfmPositionsByBases.map(column => column.reduce((information, probability, base) => (
+    probability > 0 ? information + probability * Math.log2(probability / normalizedBackground[base]) : information
   ), 0));
 }
 

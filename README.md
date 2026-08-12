@@ -4,7 +4,7 @@ An interactive, top-to-bottom explanation of published sequence CNN checkpoints.
 
 1. the 21-base stem convolution;
 2. eight dilated residual blocks;
-3. the profile and total-count output heads; and
+3. the profile and total-count output heads;
 4. the `512 × 1,074 → 1 × 1,000` profile-head conversion; and
 5. optional full `512 × N` tensor inspection and a whole-tensor dilation filmstrip magnifier.
 
@@ -33,7 +33,15 @@ Open [http://localhost:3000](http://localhost:3000).
 npm test
 ```
 
-The tests check all three ChromBPNet presets, tensor shapes and file sizes, residual convolution/ReLU/shortcut identities, profile-head convolution, profile normalization, expected-count totals, the count-head dense calculation, the ACG/GCA orientation convention, exact centered-weight bias compensation, reverse-complement involution, PFM information-content bounds, and global permutation invariance. They also validate the Basset checkpoint graph, receptive fields, binary tensor assets, stem calculation, Conv2 channel mixing, dense readout, 164 labels, and independent NumPy/TensorFlow agreement.
+This release gate runs linting, TypeScript checking, a production build, 19 numerical/source tests, and five Playwright browser tests. The browser suite renders the routes and exercises checkpoint switching, the residual-example selector, the shifted-logit softmax explanation, and the Basset K562 output.
+
+The independent scientific/export checks remain available separately so `npm test` does not depend on a large local model environment:
+
+```bash
+npm run verify:python
+```
+
+Together, the checks cover ChromBPNet tensor shapes and raw values, residual convolution/ReLU/shortcut identities, both output heads, centered-weight bias compensation, reverse complements, information content, Basset graph/readout invariants, and key teaching claims.
 
 ## Rebuild the Basset adapter
 

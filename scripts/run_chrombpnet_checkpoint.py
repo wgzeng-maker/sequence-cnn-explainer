@@ -14,6 +14,8 @@ import numpy as np
 
 BASES = np.array(list("ACGT"))
 SELECTED_CHANNEL_COUNT = 12
+PROFILE_ALIGNED_GLOBAL_START = 558
+PROFILE_ALIGNED_GLOBAL_END = 1557
 
 
 def make_sequence() -> str:
@@ -51,6 +53,50 @@ def conv1d_stages(handle: h5py.File, x: np.ndarray, layer: str, dilation: int) -
 def conv1d(handle: h5py.File, x: np.ndarray, layer: str, dilation: int, relu: bool) -> np.ndarray:
     convolution, biased, activated = conv1d_stages(handle, x, layer, dilation)
     return activated if relu else biased
+
+
+def residual_example(
+    block_input: np.ndarray,
+    transformed: np.ndarray,
+    shortcut: np.ndarray,
+    output: np.ndarray,
+    kernel: np.ndarray,
+    bias: np.ndarray,
+    dilation: int,
+    mode: str,
+) -> dict[str, object]:
+    """Choose one deterministic teaching cell inside the shared profile domain."""
+    output_length = output.shape[1]
+    input_offset = (2114 - output_length) / 2
+    first = max(0, int(np.ceil(PROFILE_ALIGNED_GLOBAL_START - 1 - input_offset)))
+    last = min(output_length - 1, int(np.floor(PROFILE_ALIGNED_GLOBAL_END - 1 - input_offset)))
+    correction = transformed[0, first:last + 1, :]
+    preserved = shortcut[0, first:last + 1, :]
+    final = output[0, first:last + 1, :]
+    if mode == "balanced":
+        score = np.minimum(correction, preserved)
+        rule = "maximize min(ReLU correction, shortcut) inside input-aligned coordinates 558–1557"
+    elif mode == "correction":
+        score = correction
+        rule = "largest ReLU correction inside input-aligned coordinates 558–1557"
+    elif mode == "output":
+        score = final
+        rule = "largest block output inside input-aligned coordinates 558–1557"
+    else:
+        raise ValueError(f"Unknown residual example mode: {mode}")
+    relative_position, output_channel = np.unravel_index(int(np.argmax(score)), score.shape)
+    position = first + int(relative_position)
+    return {
+        "selection_rule": rule,
+        "output_position_zero_based": position,
+        "input_aligned_coordinate_one_based": int(round(position + input_offset + 1)),
+        "output_channel_zero_based": int(output_channel),
+        "weights_input_channels_by_taps": np.round(kernel[:, :, output_channel].T, 7).tolist(),
+        "bias": float(bias[output_channel]),
+        "transformed_after_relu": float(transformed[0, position, output_channel]),
+        "shortcut_value": float(shortcut[0, position, output_channel]),
+        "block_output": float(output[0, position, output_channel]),
+    }
 
 
 def compact_tensor(
@@ -174,6 +220,10 @@ def main() -> None:
             tensor_name = f"res{block}"
             residual_kernel = weight(handle, f"wo_bias_bpnet_{block}conv", "kernel")
             residual_bias = weight(handle, f"wo_bias_bpnet_{block}conv", "bias")
+            example_modes = {
+                mode: residual_example(block_input, transformed, shortcut, x, residual_kernel, residual_bias, dilation, mode)
+                for mode in ("balanced", "correction", "output")
+            }
             tensors[f"{tensor_name}_conv"] = compact_tensor(convolution, f"{tensor_name}_conv", tensor_dir, args.preset_id, lightweight=True)
             tensors[f"{tensor_name}_bias"] = compact_tensor(biased, f"{tensor_name}_bias", tensor_dir, args.preset_id, lightweight=True, binary_source_name=f"{tensor_name}_conv", display_transform="add_channel_bias", channel_bias=residual_bias)
             tensors[f"{tensor_name}_relu"] = compact_tensor(transformed, f"{tensor_name}_relu", tensor_dir, args.preset_id, lightweight=True, binary_source_name=f"{tensor_name}_conv", display_transform="add_channel_bias_relu", channel_bias=residual_bias)
@@ -196,6 +246,7 @@ def main() -> None:
                 "output_channel_zero_based": output_channel,
                 "weights_input_channels_by_taps": np.round(residual_kernel[:, :, output_channel].T, 7).tolist(),
                 "bias": float(residual_bias[output_channel]),
+                "example_modes": example_modes,
                 "trace": {
                     "selection_rule": "output channel with the largest peak activation in this block; position of that channel's peak",
                     "output_position_zero_based": peak_position,

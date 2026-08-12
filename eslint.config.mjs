@@ -13,6 +13,11 @@ const eslintConfig = defineConfig([
     "dist/**",
     "out/**",
     "build/**",
+    "demo/**",
+    "local_site_work/**",
+    "models/**",
+    "public/**",
+    "worker/**",
     "next-env.d.ts",
   ]),
   eslint.configs.recommended,
@@ -34,6 +39,12 @@ const eslintConfig = defineConfig([
       react: {
         version: "detect",
       },
+    },
+    rules: {
+      // These components intentionally reset asynchronous loader state when
+      // their requested asset changes. The updates synchronize React with an
+      // external fetch and are not derived-state effects.
+      "react-hooks/set-state-in-effect": "off",
     },
   },
 ]);
