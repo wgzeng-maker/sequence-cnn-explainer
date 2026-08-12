@@ -72,6 +72,8 @@ When a genomic FASTA corpus is available, `scripts/build_activation_motifs.py` s
 
 The checkpoint extraction script is maintained at `scripts/run_chrombpnet_checkpoint.py`.
 
+After changing a canonical JSON artifact in `app/data`, rebuild the compressed browser copies with `npm run sync:browser-data`. The generated files under `public/data` are the network representation; `app/data` remains the source used by numerical verification.
+
 ## Research and communication roadmap
 
 [`docs/interpretability-and-claude-handoff-plan.md`](docs/interpretability-and-claude-handoff-plan.md) records the computer-vision interpretation methods still worth adapting, the decision to add Basset before Basenji, the multi-model acceptance gates, and a ready-to-use staged prompt for Claude Code. The prompt deliberately stops after the repository audit, again after the report, and again after the slide deck so scientific claims can be reviewed before video production.

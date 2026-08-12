@@ -18,7 +18,7 @@ type ComputationStage = "conv" | "bias" | "relu" | "output";
 const BASES = ["A", "C", "G", "T"] as const;
 const BASE_COLORS = ["#e96b54", "#4f97b2", "#e5b33f", "#72a17e"];
 type AuditCheckpoints = Record<string, { channel_orders: Record<ChannelOrder, number[]>; activation_motifs: { status: string; reason: string; target_site_count_per_filter: number; planned_corpus: string; selection_rule: string; motifs: ActivationMotif[] } }>;
-const PRESET_URLS: Record<string, string> = { k562: "/data/demos/k562.json", gm21515: "/data/demos/gm21515.json", synthetic: "/data/demos/synthetic.json" };
+const PRESET_URLS: Record<string, string> = { k562: "/data/demos/k562.json.gz", gm21515: "/data/demos/gm21515.json.gz", synthetic: "/data/demos/synthetic.json.gz" };
 const CHANNEL_ORDER_KEYS = Object.keys(CHANNEL_ORDER_LABELS) as ChannelOrder[];
 const DILATIONS = [2, 4, 8, 16, 32, 64, 128, 256];
 const LENGTHS = [2114, 2094, 2090, 2082, 2066, 2034, 1970, 1842, 1586, 1074];
@@ -36,9 +36,15 @@ function useJsonAsset<T>(url: string) {
   useEffect(() => {
     const controller = new AbortController();
     setError(null);
-    fetch(url, { signal: controller.signal }).then(response => {
+    fetch(url, { signal: controller.signal }).then(async response => {
       if (!response.ok) throw new Error(`Data request failed (${response.status}) for ${url}`);
-      return response.json() as Promise<T>;
+      let buffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        if (typeof DecompressionStream === "undefined") throw new Error("This browser cannot decode compressed checkpoint data.");
+        buffer = await new Response(new Blob([buffer]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+      }
+      return JSON.parse(new TextDecoder().decode(buffer)) as T;
     }).then(value => setLoaded({ url, value })).catch(reason => {
       if (reason instanceof DOMException && reason.name === "AbortError") return;
       setError(reason instanceof Error ? reason.message : "The data could not be loaded.");
@@ -564,6 +570,7 @@ function ResidualStory({ demo, block, setBlock, channelOrder }: { demo: Demo; bl
   }, [inputValues, inputLength, position, dilation, exampleWeights, exampleBias, outputChannel]);
 
   const globalOutput = inputCoordinate(position, outputLength);
+  const atSelectedExample = selectedExample?.output_position_zero_based === position;
   const tapSpan = 2 * dilation + 1;
 
   return <section className="story-section residual-story" id="residual">
@@ -571,7 +578,7 @@ function ResidualStory({ demo, block, setBlock, channelOrder }: { demo: Demo; bl
       The three taps are still a sliding convolution. Dilation changes only their spacing. At every tap, the kernel reads <b>all 512 feature channels</b>—not one channel in isolation.
     </SectionHeading>
     <div className="choice-row block-choices">{DILATIONS.map((value, index) => <button key={value} className={block === index + 1 ? "active" : ""} onClick={() => setBlock(index + 1)}><b>Block {index + 1}</b><small>d={value} · RF {RECEPTIVE_FIELDS[index + 1]}</small></button>)}</div>
-    <div className="residual-example-controls"><label><span>Teaching example</span><select value={availableModes ? exampleMode : "legacy"} disabled={!availableModes} onChange={event => { const mode = event.target.value as "balanced" | "correction" | "output"; setExampleMode(mode); setPosition(availableModes![mode].output_position_zero_based); }}><option value="balanced">Balanced merge · both paths active</option><option value="correction">Strongest learned correction</option><option value="output">Strongest final activation</option>{!availableModes && <option value="legacy">Stored checkpoint example</option>}</select></label><p>{selectedExample ? `${selectedExample.selection_rule}. Channel ${selectedExample.output_channel_zero_based + 1}, input-aligned coordinate ${selectedExample.input_aligned_coordinate_one_based}.` : "This preset predates the multi-example export. The displayed cell is the exact stored checkpoint example; switch to K562 for the balanced/correction/output teaching selector."}</p></div>
+    <div className="residual-example-controls"><label><span>Teaching example</span><select value={availableModes ? exampleMode : "legacy"} disabled={!availableModes} onChange={event => { const mode = event.target.value as "balanced" | "correction" | "output"; setExampleMode(mode); setPosition(availableModes![mode].output_position_zero_based); }}><option value="balanced">Balanced merge · both paths active</option><option value="correction">Strongest learned correction</option><option value="output">Strongest final activation</option>{!availableModes && <option value="legacy">Stored checkpoint example</option>}</select></label><p>{selectedExample ? atSelectedExample ? `${selectedExample.selection_rule}. Channel ${selectedExample.output_channel_zero_based + 1}, input-aligned coordinate ${selectedExample.input_aligned_coordinate_one_based}.` : `You moved away from the selected ${exampleMode} example to input coordinate ${globalOutput}. This live cell was not selected by that rule, so either path may now be zero.` : `This preset predates the multi-example export. The exact stored cell currently shows correction ${calculation?.transformed.toFixed(4) ?? "…"} + shortcut ${calculation?.shortcut.toFixed(4) ?? "…"}; it was selected for a high block output, not a balanced merge.`}</p>{selectedExample && !atSelectedExample && <button onClick={() => setPosition(selectedExample.output_position_zero_based)}>Return to selected example</button>}</div>
     <div className="dilation-explainer" data-feedback-id="Dilated three-tap slider">
       <div className="mini-heading"><div><small>SAME SLIDING IDEA</small><h3>Three one-position taps span {tapSpan.toLocaleString()} positions</h3></div><span>kernel width = 3 · dilation = {dilation}</span></div>
       <div className="tap-ruler">
@@ -914,7 +921,7 @@ export default function Home() {
   const [colorGain, setColorGain] = useState(1);
   const [channelOrderName, setChannelOrderName] = useState<ChannelOrder>("original");
   const { value: demo, error: demoError } = useJsonAsset<Demo>(PRESET_URLS[preset]);
-  const { value: auditCheckpoints, error: auditError } = useJsonAsset<{ checkpoints: AuditCheckpoints }>("/data/model-audit-summary.json");
+  const { value: auditCheckpoints, error: auditError } = useJsonAsset<{ checkpoints: AuditCheckpoints }>("/data/model-audit-summary.json.gz");
   const auditCheckpoint = auditCheckpoints?.checkpoints[preset === "gm21515" ? "gm21515" : "k562-peak"];
   const empiricalOrderingAvailable = preset !== "synthetic";
   useEffect(() => {

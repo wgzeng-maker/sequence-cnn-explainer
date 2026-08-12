@@ -53,6 +53,10 @@ test("main residual lesson defaults to a balanced two-path merge", async ({ page
   const values = await merge.locator("b").allTextContents();
   expect(Number(values[0])).toBeGreaterThan(0);
   expect(Number(values[1])).toBeGreaterThan(0);
+  await page.locator("#residual input[type=range]").fill("300");
+  await expect(page.locator("#residual .residual-example-controls")).toContainText("This live cell was not selected by that rule");
+  await page.getByRole("button", { name: "Return to selected example" }).click();
+  await expect(page.locator("#residual .residual-example-controls")).toContainText("maximize min(ReLU correction, shortcut)");
 });
 
 test("tensor inspector discloses and switches its magnitude scale", async ({ page }) => {

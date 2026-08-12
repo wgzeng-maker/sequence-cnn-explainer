@@ -158,6 +158,22 @@ test("the page teaches one connected flow and avoids the discarded GC overview",
   assert.match(page, /channelOrder\.map/);
   assert.match(page, /Model audit/);
   assert.doesNotMatch(page, /GC fraction/i);
+  assert.match(page, /This live cell was not selected by that rule/);
+  assert.match(page, /Return to selected example/);
+});
+
+test("compressed browser JSON assets exactly reproduce canonical data", async () => {
+  const mappings = [
+    ["app/data/k562-peak-activations.json", "public/data/demos/k562.json.gz"],
+    ["app/data/gm21515-activations.json", "public/data/demos/gm21515.json.gz"],
+    ["app/data/synthetic-activations.json", "public/data/demos/synthetic.json.gz"],
+    ["app/data/model-audit-summary.json", "public/data/model-audit-summary.json.gz"],
+  ];
+  for (const [source, compressed] of mappings) {
+    const canonical = await readFile(new URL(source, root));
+    const browser = gunzipSync(await readFile(new URL(compressed, root)));
+    assert.deepEqual(browser, canonical, `${compressed} must be regenerated from ${source}`);
+  }
 });
 
 test("the dilation evolution demo separates geometric reach from measured contribution", async () => {

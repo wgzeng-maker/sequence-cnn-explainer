@@ -14,6 +14,7 @@
     "test:unit": "node --test tests/rendered-html.test.mjs",
     "test:e2e": "playwright test",
     "verify:python": "python3 scripts/verify_model_analysis.py && python3 scripts/verify_basset_adapter.py",
+    "sync:browser-data": "python3 scripts/sync_browser_json.py",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
