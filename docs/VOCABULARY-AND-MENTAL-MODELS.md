@@ -56,9 +56,11 @@ earlier aligned feature + learned correction.
 
 This explains why a transform-path heatmap can become sparse again between blocks while the actual `+ Shortcut` block output preserves earlier positive cells. When comparing residual stages, use block output by default.
 
-### Profile head: a sliding global-feature reader
+### Profile head: a sliding 75-position, all-channel reader
 
 At each output position, the profile head reads 75 neighboring final-tensor columns and all 512 channels. It turns 38,400 activation–weight products into one logit. Sliding this reader produces 1,000 logits.
+
+Its window is local along the final tensor’s position axis—75 of 1,074 columns—and complete across channels. The count head instead summarizes the entire position axis, leaving one number per channel.
 
 ### Count head: summarize then read
 
@@ -99,7 +101,7 @@ Avoid upgrading the evidence with verbs such as **proves, discovers, controls, c
 
 ## Color and scale language
 
-- **Red = positive, blue = negative** for signed model values in this project.
+- **Coral = positive, blue = negative** for signed model values in this project.
 - A/C/G/T identity colors are categorical and should not be read as positive or negative.
 - White or near-white can mean zero or weak magnitude; it never means missing data unless explicitly labeled.
 - A shared scale permits magnitude comparison across panels.
@@ -111,8 +113,10 @@ Avoid upgrading the evidence with verbs such as **proves, discovers, controls, c
 Always name the coordinate system:
 
 - **input-relative position:** 1–2,114 for ChromBPNet or 1–600 for Basset;
+- **input-aligned coordinate:** a coordinate in that same input frame used to locate the center of a tensor cell’s receptive field;
 - **tensor position:** index within the current cropped activation track;
 - **profile position:** 1–1,000;
+- **kernel-relative position:** offset inside a kernel—1–21 for a stem filter or 1–75 for the profile kernel—not a DNA coordinate;
 - **genomic coordinate:** chromosome and genome build, using a declared half-open or closed convention.
 
 Avoid saying only “position 500.” After valid convolutions, position 500 in different tensors is not the same array index, even when it can be mapped to the same input-aligned center.

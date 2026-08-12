@@ -204,6 +204,8 @@ The vertical layout follows information from DNA to prediction. It contains the 
 
 The whole-tensor views show all positions before providing a magnified region. Tensor width is proportional to the number of positions so valid-convolution cropping remains visible. The default residual state is `+ Shortcut`, because that is the actual block output passed to the next layer.
 
+The tensor inspector opens with per-layer scaling, which reveals weak structure but hides absolute magnitude changes between layers. Switch to the shared magnitude scale before making a cross-layer magnitude comparison. Contrast and weak-value transforms affect display only; a higher brightness gain can saturate strong values and must never be read as a quantitative increase.
+
 The residual teaching selector intentionally offers different questions:
 
 - **Balanced merge:** maximizes the weaker of the ReLU correction and shortcut, so both paths are visible.
@@ -240,8 +242,6 @@ This route reports complete checkpoint-weight summaries and single-locus activat
 - **Count/profile agreement:** Pearson correlation across channels between absolute count-head weights and the square root of profile-kernel channel energy. It compares weight magnitudes, not predictions or causal importance.
 - **CKA:** a representation-similarity statistic. This pilot uses 128 aligned positions and the 64 highest-variance channels per layer, so it is neither a full-tensor comparison nor a channel-identity map. See [Kornblith et al.](https://proceedings.mlr.press/v97/kornblith19a).
 
-The heatmap scale and contrast controls affect display only. Shared magnitude scale is the correct default for cross-layer comparisons; per-layer scaling is useful for seeing weak structure but hides absolute magnitude changes. A higher brightness gain can saturate strong values, so it should never be read as a quantitative increase.
-
 ### Stem-filter views
 
 The three names deliberately refer to different evidence:
@@ -268,7 +268,7 @@ Within these two displayed examples, residual accumulation is associated with mo
 
 Across the complete stored residual kernels, the three taps carry similar fractions of squared weight energy. For K562, the tap fractions range from about 32.2% to 35.6%; for GM21515, from about 31.5% to 34.4%. That says the stored weights do not globally ignore a tap. It does not say all taps contribute equally for any particular input.
 
-The stored residual kernels also have low same-index diagonal energy—about 0.24–0.40% in the K562 checkpoint and 0.21–0.34% in GM21515—and large entropy-based effective input-channel counts. This strongly rejects the mental model “each output channel reads only the same-numbered input channel.” It does not identify which channel combinations matter biologically.
+Same-index connections carry about 0.24–0.40% of squared weight energy in K562 and 0.21–0.34% in GM21515. These values are close to, but mildly enriched over, the `1/512 = 0.195%` share expected if energy were spread evenly across channel pairs; they do not indicate avoidance of same-channel connections. The stronger evidence against the mental model “each output channel reads only the same-numbered input channel” is the broad entropy-based effective input-channel count: 329–379 of 512 across K562 blocks and 329–406 across GM21515 blocks. Neither statistic identifies which combinations matter biologically.
 
 ## Basset
 
@@ -302,7 +302,7 @@ Pooling trades base-level location precision for compression and increasing cont
 
 The official legacy Torch7 checkpoint is evaluated independently in NumPy and TensorFlow. The maximum absolute disagreement over all compared intermediate states and outputs is `9.95 × 10⁻¹⁴` in float64. The browser then uses exported float32 tensors.
 
-The displayed Basset sequence is the official tutorial sequence `chr7:27183235-27183835`. The K562 output probability is approximately `0.9061` and ranks 13th among the 164 labels for this sequence. This is one checkpoint prediction, not measured accessibility and not an accuracy statistic.
+The displayed Basset sequence is the official tutorial sequence `chr7:27183235-27183835`. The K562 output probability is approximately `0.9061` and ranks 13th among the 164 labels. That rank sits within a broadly high distribution for this sequence: the 164 probabilities range from about 0.54 to 0.97, their median is 0.80, and 82 exceed 0.80. The checkpoint therefore does not single out K562. This is one checkpoint prediction, not measured accessibility and not an accuracy statistic.
 
 ## What the current visual evidence can and cannot support
 
