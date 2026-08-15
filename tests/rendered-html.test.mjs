@@ -341,3 +341,18 @@ test("publication documentation preserves the audited evidence boundary", async 
   assert.match(vocabulary, /Attribution motif/);
   assert.match(vocabulary, /Coral = positive, blue = negative/);
 });
+
+test("the public visit counter starts at 45 and avoids counting rapid reloads", async () => {
+  const [page, route, hosting] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/visits/route.ts", root), "utf8"),
+    readFile(new URL(".openai/hosting.json", root), "utf8"),
+  ]);
+  assert.match(page, /VISUALIZER VISITS/);
+  assert.match(page, /VISIT_SESSION_MS = 30 \* 60 \* 1000/);
+  assert.match(page, /fetch\("\/api\/visits"/);
+  assert.match(route, /INITIAL_VISIBLE_COUNT = 45/);
+  assert.match(route, /VALUES \(\?, 45, CURRENT_TIMESTAMP\)/);
+  assert.match(route, /value = site_counters\.value \+ 1/);
+  assert.equal(JSON.parse(hosting).d1, "DB");
+});

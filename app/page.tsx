@@ -24,6 +24,8 @@ const DILATIONS = [2, 4, 8, 16, 32, 64, 128, 256];
 const LENGTHS = [2114, 2094, 2090, 2082, 2066, 2034, 1970, 1842, 1586, 1074];
 const RECEPTIVE_FIELDS = [21, 25, 33, 49, 81, 145, 273, 529, 1041];
 const MAX_TENSOR_LENGTH = 2094;
+const VISIT_SESSION_MS = 30 * 60 * 1000;
+const VISIT_STORAGE_KEY = "sequence-cnn-explainer:last-counted-visit";
 
 const css = (values: Record<string, string | number>) => values as CSSProperties;
 const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
@@ -52,6 +54,37 @@ function useJsonAsset<T>(url: string) {
     return () => controller.abort();
   }, [url]);
   return { value: loaded?.url === url ? loaded.value : null, error };
+}
+
+function useVisitCount() {
+  const [visits, setVisits] = useState(45);
+  useEffect(() => {
+    const now = Date.now();
+    const lastVisit = Number(localStorage.getItem(VISIT_STORAGE_KEY) ?? 0);
+    const shouldCount = !Number.isFinite(lastVisit) || now - lastVisit >= VISIT_SESSION_MS;
+    const controller = new AbortController();
+    fetch("/api/visits", {
+      method: shouldCount ? "POST" : "GET",
+      headers: { Accept: "application/json" },
+      signal: controller.signal,
+    }).then(async response => {
+      if (!response.ok) throw new Error(`Visit counter request failed (${response.status})`);
+      return response.json() as Promise<{ visits: number }>;
+    }).then(payload => {
+      setVisits(payload.visits);
+      if (shouldCount) localStorage.setItem(VISIT_STORAGE_KEY, String(now));
+    }).catch(() => {
+      // Keep the requested starting value visible if persistence is unavailable.
+    });
+    return () => controller.abort();
+  }, []);
+  return visits;
+}
+
+function VisitCounter({ visits }: { visits: number }) {
+  return <aside className="visit-counter" aria-live="polite" title="Approximate visits · one count per browser every 30 minutes">
+    <small>VISUALIZER VISITS</small><b>{visits.toLocaleString()}</b>
+  </aside>;
 }
 
 function tensorFor(demo: Demo, key: TensorKey): Tensor {
@@ -924,10 +957,11 @@ export default function Home() {
   const { value: auditCheckpoints, error: auditError } = useJsonAsset<{ checkpoints: AuditCheckpoints }>("/data/model-audit-summary.json.gz");
   const auditCheckpoint = auditCheckpoints?.checkpoints[preset === "gm21515" ? "gm21515" : "k562-peak"];
   const empiricalOrderingAvailable = preset !== "synthetic";
+  const visits = useVisitCount();
   useEffect(() => {
     if (demo) setWindowStart(demo.filter_demos[0].peak_position_zero_based);
   }, [demo]);
-  if (!demo || !auditCheckpoint) return <main className="route-loading"><b>Loading verified checkpoint data…</b>{(demoError || auditError) && <p role="alert">{demoError || auditError}</p>}</main>;
+  if (!demo || !auditCheckpoint) return <main className="route-loading"><b>Loading verified checkpoint data…</b>{(demoError || auditError) && <p role="alert">{demoError || auditError}</p>}<VisitCounter visits={visits} /></main>;
   const channelOrder = auditCheckpoint.channel_orders[empiricalOrderingAvailable ? channelOrderName : "original"];
   return <main>
     <a className="video-banner" href="https://youtu.be/-wmg_ehUxfk" target="_blank" rel="noreferrer" aria-label="Watch How CNNs Read DNA on YouTube">
@@ -970,5 +1004,6 @@ export default function Home() {
     <section className="attribution-note"><div><small>NOT PART OF THIS FORWARD-PASS DEMO</small><h2>Input attribution requires an additional analysis</h2></div><p>DeepLIFT, SHAP, gradients, or another attribution method must generate base-level attribution scores. Activations alone show what each layer computed, not which input bases caused the final prediction.</p></section>
     <footer><b>Sequence CNN Explainer · structural prototype</b><span>Model values: published {demo.provenance.biosample} ChromBPNet checkpoint · coordinates: input-relative unless explicitly labeled</span></footer>
     <FeedbackLayer />
+    <VisitCounter visits={visits} />
   </main>;
 }
