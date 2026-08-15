@@ -339,5 +339,5 @@ test("publication documentation preserves the audited evidence boundary", async 
   assert.match(vocabulary, /Weight logo/);
   assert.match(vocabulary, /Activation motif/);
   assert.match(vocabulary, /Attribution motif/);
-  assert.match(vocabulary, /Red = positive, blue = negative/);
+  assert.match(vocabulary, /Coral = positive, blue = negative/);
 });

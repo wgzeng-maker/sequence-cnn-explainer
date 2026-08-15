@@ -1,6 +1,6 @@
 # Independent Audit V3 — Follow-up on commit `23546eae`
 
-**Repository root:** `/Users/zengweiguo/Documents/sequence_model_explainer` (confirmed via `git rev-parse --show-toplevel`)
+**Repository root:** `<repository-root>` (confirmed via `git rev-parse --show-toplevel`)
 **HEAD:** `23546eae35a0c832cbf724e8a206c4ff1b5dae71` — *Resolve independent audit release blockers*
 **Branch:** `codex/dilation-tensor-evolution-demo`
 **Working tree:** clean (`git status --short` empty, before and after)
@@ -41,7 +41,7 @@ F-4 duplicated data with no sync path) that matter for a published artifact but 
 
 | # | Command | Result |
 |---|---|---|
-| 1 | `git rev-parse --show-toplevel` | `/Users/zengweiguo/Documents/sequence_model_explainer` ✅ |
+| 1 | `git rev-parse --show-toplevel` | `<repository-root>` ✅ |
 | 2 | `git log -1 --oneline` | `23546eae Resolve independent audit release blockers` ✅ |
 | 3 | `git rev-parse --abbrev-ref HEAD` | `codex/dilation-tensor-evolution-demo` ✅ |
 | 4 | `git status --short` | empty ✅ |

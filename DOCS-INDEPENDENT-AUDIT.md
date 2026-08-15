@@ -1,6 +1,6 @@
 # Independent audit — documentation set
 
-**Repository root:** `/Users/zengweiguo/Documents/sequence_model_explainer`
+**Repository root:** `<repository-root>`
 **Branch:** `codex/dilation-tensor-evolution-demo`
 **HEAD examined:** `018cbdcf2b03e3e0fcb25a71cecfdf2474ca50a1` — *Document sequence CNN architecture and claim boundaries*
 **Working tree:** clean except one untracked Microsoft Word lock file (`docs/~$CHNICAL-DOCUMENTATION.md`, 0 bytes)

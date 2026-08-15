@@ -1,6 +1,6 @@
 # Independent Audit V2 — Sequence CNN Explainer
 
-**Repo:** `/Users/zengweiguo/Documents/sequence_model_explainer`
+**Repo:** `<repository-root>`
 **Commit:** `b515ac6d` *Complete signed kernel and Basset dense readout views* · working tree **clean**
 **Method:** full read of all 4 route components, both shared modules, both docs, the test suite and the
 Python verifiers; numeric re-derivation of all three ChromBPNet presets, the complete Basset forward
@@ -18,7 +18,7 @@ preference, argued not proven · **[LATENT]** real defect not currently reachabl
 
 | Check | Result |
 |---|---|
-| `pwd` | `/Users/zengweiguo/Documents/sequence_model_explainer` ✅ |
+| `pwd` | `<repository-root>` ✅ |
 | `git rev-parse --show-toplevel` | same path (repo root) ✅ |
 | `git log -1 --oneline` | `b515ac6d Complete signed kernel and Basset dense readout views` ✅ |
 | working tree | clean, 0 modified/untracked ✅ |

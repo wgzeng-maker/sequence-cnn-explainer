@@ -1,6 +1,6 @@
 # Independent Audit V3 — Sequence CNN Explainer
 
-**Repository root:** `/Users/zengweiguo/Documents/sequence_model_explainer` (confirmed with `git rev-parse --show-toplevel`)
+**Repository root:** `<repository-root>` (confirmed with `git rev-parse --show-toplevel`)
 **Commit:** `3d56b978` *Fix audited explainer teaching and verification gaps*
 **Branch:** `codex/dilation-tensor-evolution-demo`
 **Working tree:** clean (`git status --short` produced no output, before and after this audit)
@@ -26,7 +26,7 @@ position · **[LATENT]** real defect not currently reachable by a reader · **[P
 
 | Command | Result |
 |---|---|
-| `git rev-parse --show-toplevel` | `/Users/zengweiguo/Documents/sequence_model_explainer` ✅ |
+| `git rev-parse --show-toplevel` | `<repository-root>` ✅ |
 | `git status --short` | empty — clean tree ✅ |
 | `git log -1 --oneline` | `3d56b978 Fix audited explainer teaching and verification gaps` ✅ |
 | `git rev-parse --abbrev-ref HEAD` | `codex/dilation-tensor-evolution-demo` |

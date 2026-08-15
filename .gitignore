@@ -5,6 +5,26 @@ models/
 output/
 tmp/
 local_site_work/
+.tmp/
+
+# Local publishing and video-production workspace
+localhost_open.rtf
+youtube_material/
+docs/assets/
+docs/video-editor-assets/
+docs/video-export/
+docs/video-production-v2/
+docs/video-production-v3/
+docs/video-production-v4/
+docs/*.pptx
+docs/*.pptx.inspect.ndjson
+docs/*.mp4
+docs/ANIMATION-STORYBOARD.md
+docs/BLOG-DRAFT*.md
+docs/CREATIVE-NARRATIVE-BRIEF.md
+docs/SLIDE-SCRIPT-AUDIT.md
+docs/YOUTUBE-*.md
+scripts/build-youtube-thumbnail-v2.mjs
 
 # Local build products
 **/node_modules/
