@@ -30,6 +30,7 @@ scripts/build-youtube-thumbnail-v2.mjs
 **/node_modules/
 /node_modules
 **/.next/
+**/.vite/
 **/.vinext/
 **/.wrangler/
 **/dist/
