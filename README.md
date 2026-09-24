@@ -1,27 +1,34 @@
 # Sequence CNN Explainer
 
-An interactive, top-to-bottom explanation of published sequence CNN checkpoints. The main explainer follows a ChromBPNet calculation from a 2,114-base one-hot input through:
+An interactive explanation of how published ChromBPNet and Basset sequence convolutional neural networks process DNA, from encoded input to model outputs.
 
-1. the 21-base stem convolution;
-2. eight dilated residual blocks;
-3. the profile and total-count output heads;
-4. the `512 × 1,074 → 1 × 1,000` profile-head conversion; and
-5. optional full `512 × N` tensor inspection and a whole-tensor dilation filmstrip magnifier.
+The project combines step-by-step calculations, tensor visualizations, and checkpoint-derived examples. It keeps model structure, computation, and biological interpretation distinct.
 
-The stem-filter panel includes three intentionally distinct views: the raw signed heatmap, an exactly reparameterized signed weight logo, and a corpus-derived activation-logo slot. The activation logo remains visibly unavailable until a real multi-sequence corpus artifact exists. A global channel registry keeps immutable channel IDs synchronized when every displayed layer and head is reordered.
+## Explore the project
 
-Two supporting routes keep the main visual story focused:
+| View | What it explains |
+|---|---|
+| Main explainer (`/`) | ChromBPNet stem convolution, residual blocks, and profile/count heads |
+| Dilation trace (`/dilation-trace`) | One aligned tensor region through eight residual blocks |
+| Model audit (`/model-audit`) | Layer statistics, channel rankings, kernel diagnostics, and representation similarity |
+| Basset (`/basset`) | Convolution, pooling, flattening, and the 164-output accessibility readout |
 
-- `/dilation-trace` follows one aligned tensor region through all eight residual blocks.
-- `/model-audit` separates descriptive structure, model mechanism, and biological evidence while exposing layer statistics, channel rankings, kernel diagnostics, and representation similarity.
+- **Run the interface:** [Local use](#local-use).
+- **Understand the implementation:** [Technical documentation](docs/TECHNICAL-DOCUMENTATION.md).
+- **Check the evidence boundaries:** [Claim ledger](docs/CLAIM-LEDGER.md).
+- **Inspect the checks:** [Verification](#verification) and [tests](tests/).
+- **Trace the checkpoint adapter:** [Basset provenance and conventions](docs/basset-checkpoint-adapter.md).
 
-A third route, `/basset`, adapts the original published Basset Torch7 checkpoint. It connects a 600 bp input to three convolution/max-pooling stages, a `200 × 10 → 2,000` flattening step, two dense layers, and 164 cell-type accessibility probabilities. The page includes an exact sliding-filter calculation, a max-pooling microscope, complete tensor heatmaps with local zoom, a `300 channels × 11 positions` Conv2 mixing example, and the dense global readout.
+## Scope and current limits
 
-The default demo uses forward-pass activations extracted from the K562 DNase checkpoint `model.chrombpnet_nobias.fold_0.ENCSR000EOT.h5`. A second real checkpoint uses the published GM21515 ATAC model `model.chrombpnet_nobias.fold_0.ENCSR960KGO.h5` on the same DNA window, allowing a controlled model-to-model comparison. Raw browser heatmaps are stored as gzip-compressed, channel-major little-endian float32 files so weak nonzero activations are not lost to display quantization.
+The current activation audit is a one-locus descriptive pilot. The corpus-derived activation-logo view remains unavailable until a documented multi-sequence corpus artifact exists. Planned population and motif analyses are described below as future work.
 
 ## Local use
 
+Requires Node.js **22.13.0 or newer**, as specified in `package.json`. From the repository root:
+
 ```bash
+npm ci
 npm run dev
 ```
 
@@ -42,6 +49,27 @@ npm run verify:python
 ```
 
 Together, the checks cover ChromBPNet tensor shapes and raw values, residual convolution/ReLU/shortcut identities, both output heads, centered-weight bias compensation, reverse complements, information content, Basset graph/readout invariants, and key teaching claims.
+
+## Model walkthrough details
+
+An interactive, top-to-bottom explanation of published sequence CNN checkpoints. The main explainer follows a ChromBPNet calculation from a 2,114-base one-hot input through:
+
+1. the 21-base stem convolution;
+2. eight dilated residual blocks;
+3. the profile and total-count output heads;
+4. the `512 × 1,074 → 1 × 1,000` profile-head conversion; and
+5. optional full `512 × N` tensor inspection and a whole-tensor dilation filmstrip magnifier.
+
+The stem-filter panel includes three intentionally distinct views: the raw signed heatmap, an exactly reparameterized signed weight logo, and a corpus-derived activation-logo slot. The activation logo remains visibly unavailable until a real multi-sequence corpus artifact exists. A global channel registry keeps immutable channel IDs synchronized when every displayed layer and head is reordered.
+
+Two supporting routes keep the main visual story focused:
+
+- `/dilation-trace` follows one aligned tensor region through all eight residual blocks.
+- `/model-audit` separates descriptive structure, model mechanism, and biological evidence while exposing layer statistics, channel rankings, kernel diagnostics, and representation similarity.
+
+A third route, `/basset`, adapts the original published Basset Torch7 checkpoint. It connects a 600 bp input to three convolution/max-pooling stages, a `200 × 10 → 2,000` flattening step, two dense layers, and 164 cell-type accessibility probabilities. The page includes an exact sliding-filter calculation, a max-pooling microscope, complete tensor heatmaps with local zoom, a `300 channels × 11 positions` Conv2 mixing example, and the dense global readout.
+
+The default demo uses forward-pass activations extracted from the K562 DNase checkpoint `model.chrombpnet_nobias.fold_0.ENCSR000EOT.h5`. A second real checkpoint uses the published GM21515 ATAC model `model.chrombpnet_nobias.fold_0.ENCSR960KGO.h5` on the same DNA window, allowing a controlled model-to-model comparison. Raw browser heatmaps are stored as gzip-compressed, channel-major little-endian float32 files so weak nonzero activations are not lost to display quantization.
 
 ## Rebuild the Basset adapter
 
