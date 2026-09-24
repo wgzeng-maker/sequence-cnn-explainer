@@ -1,10 +1,8 @@
 # Sequence CNN Explainer
 
-An interactive explanation of how published ChromBPNet and Basset sequence convolutional neural networks process DNA, from encoded input to model outputs.
+See how ChromBPNet and Basset process a DNA sequence, layer by layer. The app uses published model checkpoints to show the calculations and intermediate values behind their predictions.
 
-The project combines step-by-step calculations, tensor visualizations, and checkpoint-derived examples. It keeps model structure, computation, and biological interpretation distinct.
-
-## Explore the project
+## Pages
 
 | View | What it explains |
 |---|---|
@@ -13,15 +11,15 @@ The project combines step-by-step calculations, tensor visualizations, and check
 | Model audit (`/model-audit`) | Layer statistics, channel rankings, kernel diagnostics, and representation similarity |
 | Basset (`/basset`) | Convolution, pooling, flattening, and the 164-output accessibility readout |
 
-- **Run the interface:** [Local use](#local-use).
-- **Understand the implementation:** [Technical documentation](docs/TECHNICAL-DOCUMENTATION.md).
-- **Check the evidence boundaries:** [Claim ledger](docs/CLAIM-LEDGER.md).
-- **Inspect the checks:** [Verification](#verification) and [tests](tests/).
-- **Trace the checkpoint adapter:** [Basset provenance and conventions](docs/basset-checkpoint-adapter.md).
+- **Run locally:** [Local use](#local-use).
+- **How it works:** [Technical documentation](docs/TECHNICAL-DOCUMENTATION.md).
+- **Supported claims and limitations:** [Claim ledger](docs/CLAIM-LEDGER.md).
+- **Tests:** [Verification](#verification) and [tests](tests/).
+- **Basset model conversion:** [Basset provenance and conventions](docs/basset-checkpoint-adapter.md).
 
-## Scope and current limits
+## Current limitations
 
-The current activation audit is a one-locus descriptive pilot. The corpus-derived activation-logo view remains unavailable until a documented multi-sequence corpus artifact exists. Planned population and motif analyses are described below as future work.
+The activation statistics currently describe one genomic region. Activation logos are not yet available; they require analysis of a documented set of sequences. The larger analyses planned for these views are described below.
 
 ## Local use
 
@@ -40,9 +38,9 @@ Open [http://localhost:3000](http://localhost:3000).
 npm test
 ```
 
-This release gate runs linting, TypeScript checking, a production build, numerical/source tests, and rendered Playwright browser tests. The browser suite exercises checkpoint switching, both residual-example selectors, tensor loading and scaling, the shifted-logit softmax explanation, and the Basset K562 output.
+This command runs linting, TypeScript checking, a production build, numerical/source tests, and rendered Playwright browser tests. The browser tests cover checkpoint switching, both residual-example selectors, tensor loading and scaling, the shifted-logit softmax explanation, and the Basset K562 output.
 
-The independent scientific/export checks remain available separately so `npm test` does not depend on a large local model environment:
+The Python checks for model calculations and exported data run separately because they require a local model environment:
 
 ```bash
 npm run verify:python
@@ -52,7 +50,7 @@ Together, the checks cover ChromBPNet tensor shapes and raw values, residual con
 
 ## Model walkthrough details
 
-An interactive, top-to-bottom explanation of published sequence CNN checkpoints. The main explainer follows a ChromBPNet calculation from a 2,114-base one-hot input through:
+The main page follows a ChromBPNet calculation from a 2,114-base one-hot input through:
 
 1. the 21-base stem convolution;
 2. eight dilated residual blocks;
@@ -60,16 +58,16 @@ An interactive, top-to-bottom explanation of published sequence CNN checkpoints.
 4. the `512 × 1,074 → 1 × 1,000` profile-head conversion; and
 5. optional full `512 × N` tensor inspection and a whole-tensor dilation filmstrip magnifier.
 
-The stem-filter panel includes three intentionally distinct views: the raw signed heatmap, an exactly reparameterized signed weight logo, and a corpus-derived activation-logo slot. The activation logo remains visibly unavailable until a real multi-sequence corpus artifact exists. A global channel registry keeps immutable channel IDs synchronized when every displayed layer and head is reordered.
+The stem-filter panel includes three views: the raw signed heatmap, an exactly reparameterized signed weight logo, and a corpus-derived activation-logo slot. The activation logo is unavailable until the sequence-corpus analysis is complete. Channel IDs stay consistent across layers and heads when the display order changes.
 
-Two supporting routes keep the main visual story focused:
+Two pages provide more detail:
 
 - `/dilation-trace` follows one aligned tensor region through all eight residual blocks.
 - `/model-audit` separates descriptive structure, model mechanism, and biological evidence while exposing layer statistics, channel rankings, kernel diagnostics, and representation similarity.
 
 A third route, `/basset`, adapts the original published Basset Torch7 checkpoint. It connects a 600 bp input to three convolution/max-pooling stages, a `200 × 10 → 2,000` flattening step, two dense layers, and 164 cell-type accessibility probabilities. The page includes an exact sliding-filter calculation, a max-pooling microscope, complete tensor heatmaps with local zoom, a `300 channels × 11 positions` Conv2 mixing example, and the dense global readout.
 
-The default demo uses forward-pass activations extracted from the K562 DNase checkpoint `model.chrombpnet_nobias.fold_0.ENCSR000EOT.h5`. A second real checkpoint uses the published GM21515 ATAC model `model.chrombpnet_nobias.fold_0.ENCSR960KGO.h5` on the same DNA window, allowing a controlled model-to-model comparison. Raw browser heatmaps are stored as gzip-compressed, channel-major little-endian float32 files so weak nonzero activations are not lost to display quantization.
+The default demo uses forward-pass activations extracted from the K562 DNase checkpoint `model.chrombpnet_nobias.fold_0.ENCSR000EOT.h5`. A second checkpoint uses the published GM21515 ATAC model `model.chrombpnet_nobias.fold_0.ENCSR960KGO.h5` on the same DNA window, allowing a controlled model-to-model comparison. Raw browser heatmaps are stored as gzip-compressed, channel-major little-endian float32 files so weak nonzero activations are not lost to display quantization.
 
 ## Rebuild the Basset adapter
 
@@ -83,30 +81,30 @@ models/.extract-env/bin/python scripts/export_basset_demo.py \
 models/.extract-env/bin/python scripts/verify_basset_adapter.py
 ```
 
-The exporter validates the decompressed checkpoint SHA-256, reads the stored module graph rather than guessing from a parameter file, evaluates every layer twice with independent NumPy and TensorFlow implementations, and exports about 1.1 MB of float32 browser tensors plus a compact JSON narrative artifact. See [`docs/basset-checkpoint-adapter.md`](docs/basset-checkpoint-adapter.md) for the provenance and operator conventions.
+The exporter validates the decompressed checkpoint SHA-256, reads the stored module graph, evaluates every layer twice with independent NumPy and TensorFlow implementations, and exports about 1.1 MB of float32 browser tensors plus a compact JSON file for the walkthrough. See [`docs/basset-checkpoint-adapter.md`](docs/basset-checkpoint-adapter.md) for the provenance and operator conventions.
 
-## Rebuild the compact audit artifact
+## Rebuild the audit data
 
-The deployed audit JSON contains complete checkpoint-weight summaries and single-locus activation summaries—not the full activation tensors:
+The deployed audit JSON summarizes checkpoint weights and activations from one genomic region. Full activation tensors are stored separately:
 
 ```bash
 models/.extract-env/bin/python scripts/build_model_audit.py
 models/.extract-env/bin/python scripts/verify_model_analysis.py
 ```
 
-The current activation statistics are explicitly labeled as a one-locus descriptive pilot. The planned population pass uses 5,000 peaks plus 5,000 matched inactive regions and reverse complements; the motif pass uses 30,000 peaks and retains only aggregate statistics and bounded activation-window reservoirs.
+The current activation statistics are labeled as a single-region analysis. The planned population analysis uses 5,000 peaks plus 5,000 matched inactive regions and reverse complements; the planned motif analysis uses 30,000 peaks and retains only aggregate statistics and bounded activation-window reservoirs.
 
-When a genomic FASTA corpus is available, `scripts/build_activation_motifs.py` streams it through the exact TensorFlow stem cross-correlation, keeps a bounded top-activation reservoir, removes overlapping 21-mers, builds PFMs/information content, and can merge the results into the audit JSON. Until that command is run on a documented corpus, the site shows a deliberate empty state rather than a pseudo-motif.
+When a genomic FASTA corpus is available, `scripts/build_activation_motifs.py` streams it through the exact TensorFlow stem cross-correlation, keeps a bounded top-activation reservoir, removes overlapping 21-mers, builds PFMs/information content, and can merge the results into the audit JSON. The activation-logo view stays empty until this command has been run on a documented corpus.
 
 The checkpoint extraction script is maintained at `scripts/run_chrombpnet_checkpoint.py`.
 
-After changing a canonical JSON artifact in `app/data`, rebuild the compressed browser copies with `npm run sync:browser-data`. The generated files under `public/data` are the network representation; `app/data` remains the source used by numerical verification.
+After changing a source JSON file in `app/data`, rebuild the compressed browser copies with `npm run sync:browser-data`. The generated files under `public/data` are the network representation; `app/data` remains the source used by numerical verification.
 
-## Research and communication roadmap
+## Planned work
 
-[`docs/interpretability-and-claude-handoff-plan.md`](docs/interpretability-and-claude-handoff-plan.md) records the computer-vision interpretation methods still worth adapting, the decision to add Basset before Basenji, the multi-model acceptance gates, and a ready-to-use staged prompt for Claude Code. The prompt deliberately stops after the repository audit, again after the report, and again after the slide deck so scientific claims can be reviewed before video production.
+[`docs/interpretability-and-claude-handoff-plan.md`](docs/interpretability-and-claude-handoff-plan.md) records proposed interpretation methods, the Basset-before-Basenji development order, checks for adding models, and instructions for Claude Code. The instructions call for human review after the repository audit, report, and slide deck, before video production.
 
-## Documentation and publication controls
+## Further documentation
 
 - [`docs/TECHNICAL-DOCUMENTATION.md`](docs/TECHNICAL-DOCUMENTATION.md) is the complete architecture, tensor-shape, visualization, metric, and reproducibility reference for ChromBPNet and Basset.
 - [`docs/CLAIM-LEDGER.md`](docs/CLAIM-LEDGER.md) defines which structural, descriptive, mechanistic, and biological claims are currently supported and the qualifiers required for public communication.
